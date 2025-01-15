@@ -1,0 +1,16 @@
+[0;33m--- Warning: GDB cannot open serial ports accessed as COMx[0m
+[0;33m--- Using \\.\COM6 instead...[0m
+[0;33m--- esp-idf-monitor 1.5.0 on \\.\COM6 115200[0m
+[0;33m--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H[0m
+[0;33m--- 0x40080400: _init at ??:?
+[0m
+[0;33m--- 0x40081926: panic_abort at C:/Espressif/frameworks/esp-idf-v5.3.1-2/components/esp_system/panic.c:463
+0x40086401: esp_system_abort at C:/Espressif/frameworks/esp-idf-v5.3.1-2/components/esp_system/port/esp_system_chip.c:92
+0x40087212: vApplicationStackOverflowHook at C:/Espressif/frameworks/esp-idf-v5.3.1-2/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:554
+0x40088277: vTaskSwitchContext at C:/Espressif/frameworks/esp-idf-v5.3.1-2/components/freertos/FreeRTOS-Kernel/tasks.c:3701 (discriminator 7)
+0x4008731c: _frxt_dispatch at C:/Espressif/frameworks/esp-idf-v5.3.1-2/components/freertos/FreeRTOS-Kernel/portable/xtensa/portasm.S:451
+0x400872ce: _frxt_int_exit at C:/Espressif/frameworks/esp-idf-v5.3.1-2/components/freertos/FreeRTOS-Kernel/portable/xtensa/portasm.S:246
+[0m
+[0;33m--- 0x40080400: _init at ??:?
+[0m
+[0m
