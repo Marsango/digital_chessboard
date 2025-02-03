@@ -24,14 +24,15 @@ class ConnectWindow(QDialog, Ui_Dialog):
 
             if response.status_code == 200:
                 user_data = response.json()
-                dialog = MessageWindow('Conectado com sucesso!')
+                dialog = MessageWindow('Sucessful connected!')
                 self.user_data.emit({'user': user_data['username'], 'token': self.lineEdit.text()})
                 dialog.exec()
                 self.close()
             else:
-                dialog = MessageWindow(f'Falha ao conectar: {response.status_code}!')
+                dialog = MessageWindow(f'Fail to connect: {response.status_code}!')
+                self.user_data.emit({'user': None, 'token': None})
                 dialog.exec()
 
         except requests.RequestException as e:
-            dialog = MessageWindow(f'Erro: {e}')
+            dialog = MessageWindow(f'Error: {e}')
             dialog.exec()
