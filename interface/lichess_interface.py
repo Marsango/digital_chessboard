@@ -89,6 +89,8 @@ class LichessInterface(QMainWindow):
         self.cells = []
         self.selected_cell = None  # Track the selected cell
         self.initialize_board()
+        self.current_color = 'white'
+        self.update_board()
 
     def create_connected_layout(self):
         widget = QWidget()
@@ -188,19 +190,31 @@ class LichessInterface(QMainWindow):
         if len(move) == 5:
             return f'{move[2]}{move[3]}={move[4]}'
         else:
-            if CURRENT_BOARD[8 - int(move[1])][self.letter_position(move[0])].lower() != 'p':
-                return f'{CURRENT_BOARD[8 - int(move[1])][self.letter_position(move[0])].upper()}{move[2]}{move[3]}'
+            square_to_erase = move[0] + move[1]
+            square_to_fill = move[2] + move[3]
+            if (square_to_erase == 'e1' and square_to_fill == 'g1' and CURRENT_BOARD[7][4].upper()) == 'K' or ( square_to_erase == 'e8' and square_to_fill == 'g8' and CURRENT_BOARD[0][4] == 'k'):
+                return 'O-O'
+            elif (square_to_erase == 'e1' and square_to_fill == 'c1' and CURRENT_BOARD[7][4].upper() == 'K') or (square_to_erase == 'e8' and square_to_fill == 'c8' and CURRENT_BOARD[0][4] == 'k'):
+                return 'O-O-O'
+            elif CURRENT_BOARD[8 - int(move[1])][self.letter_position(move[0])].lower() != 'p':
+                if CURRENT_BOARD[8 - int(move[3])][self.letter_position(move[2])].lower() != '.':
+                    return f'{CURRENT_BOARD[8 - int(move[1])][self.letter_position(move[0])].upper()}x{move[2]}{move[3]}'
+                else:
+                    return f'{CURRENT_BOARD[8 - int(move[1])][self.letter_position(move[0])].upper()}{move[2]}{move[3]}'
             else:
-                return f'{move[2]}{move[3]}'
+                if CURRENT_BOARD[8 - int(move[3])][self.letter_position(move[2])].lower() != '.':
+                    return f'{move[0]}x{move[2]}{move[3]}'
+                else:
+                    return f'{move[2]}{move[3]}'
 
     def handle_game_events(self, event):
         if event['type'] == 'gameState' and event['status'] != 'aborted':
             last_move = event['moves'].split()[-1]
-            white_time = event['wtime'] / 600
-            black_time = event['btime'] / 600
+            white_time = event['wtime'] / 100
+            black_time = event['btime'] / 100
             self.your_time.setText(f'{int(white_time / 60)}:{int(white_time % 60):02d}')
             self.opponent_time.setText(f'{int(black_time / 60)}:{int(black_time % 60):02d}')
-            self.last_move.setText(self.translate_move(last_move))
+            self.last_move.setText(f'Last move: {self.translate_move(last_move)}')
             self.make_ui_move(last_move)
             self.update_board()
 
@@ -217,16 +231,22 @@ class LichessInterface(QMainWindow):
             CURRENT_BOARD[7][3] = 'R'
             CURRENT_BOARD[7][4] = '.'
             CURRENT_BOARD[7][0] = '.'
-        elif square_to_erase == 'e8' and square_to_fill == 'g8' and CURRENT_BOARD[0][4].upper() == 'K':
-            CURRENT_BOARD[0][6] = 'K'
-            CURRENT_BOARD[0][5] = 'R'
+        elif square_to_erase == 'e8' and square_to_fill == 'g8' and CURRENT_BOARD[0][4] == 'k':
+            CURRENT_BOARD[0][6] = 'k'
+            CURRENT_BOARD[0][5] = 'r'
             CURRENT_BOARD[0][4] = '.'
             CURRENT_BOARD[0][7] = '.'
-        elif square_to_erase == 'e8' and square_to_fill == 'c8' and CURRENT_BOARD[0][4].upper() == 'K':
-            CURRENT_BOARD[0][2] = 'K'
-            CURRENT_BOARD[0][3] = 'R'
+        elif square_to_erase == 'e8' and square_to_fill == 'c8' and CURRENT_BOARD[0][4] == 'k':
+            CURRENT_BOARD[0][2] = 'k'
+            CURRENT_BOARD[0][3] = 'r'
             CURRENT_BOARD[0][4] = '.'
             CURRENT_BOARD[0][0] = '.'
+        elif square_to_erase[1] == '7' and CURRENT_BOARD[8 - int(square_to_erase[1])][self.letter_position(square_to_erase[0])] == 'P':
+            CURRENT_BOARD[8 - int(square_to_erase[1])][self.letter_position(square_to_erase[0])] = '.'
+            CURRENT_BOARD[8 - int(square_to_fill[1])][self.letter_position(square_to_fill[0])] = move[-1].upper()
+        elif square_to_erase[1] == '2' and CURRENT_BOARD[8 - int(square_to_erase[1])][self.letter_position(square_to_erase[0])] == 'p':
+            CURRENT_BOARD[8 - int(square_to_erase[1])][self.letter_position(square_to_erase[0])] = '.'
+            CURRENT_BOARD[8 - int(square_to_fill[1])][self.letter_position(square_to_fill[0])] = move[-1].lower()
         else:
             CURRENT_BOARD[8 - int(square_to_fill[1])][self.letter_position(square_to_fill[0])] = CURRENT_BOARD[8 - int(square_to_erase[1])][self.letter_position(square_to_erase[0])]
             CURRENT_BOARD[8 - int(square_to_erase[1])][self.letter_position(square_to_erase[0])] = '.'
@@ -242,7 +262,8 @@ class LichessInterface(QMainWindow):
             else:
                 self.opponent.setText(f"{event['game']['opponent']['username']}")
             self.current_game = event['game']['gameId']
-            self.last_move.setText('--')
+            self.current_color = event['game']["color"]
+            self.last_move.setText('Last move: --')
             self.your_time.setText('-:--')
             self.opponent_time.setText('-:--')
             CURRENT_BOARD = copy.deepcopy(INITIAL_BOARD)
@@ -269,7 +290,10 @@ class LichessInterface(QMainWindow):
         """Atualiza a interface gráfica com base no estado atual do tabuleiro."""
         for row in range(8):
             for col in range(8):
-                cell = self.cells[row][col]
+                if self.current_color == 'black':
+                    cell = self.cells[7 - row][7 - col]
+                else:
+                    cell = self.cells[row][col]
                 piece = CURRENT_BOARD[row][col]
 
                 # Atualiza a peça exibida
