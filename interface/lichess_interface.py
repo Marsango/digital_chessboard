@@ -97,6 +97,20 @@ class LichessInterface(QMainWindow):
         self.move_timer = QTimer()
         self.move_timer.timeout.connect(self.update_time)
         self.start_timer_signal.connect(self.start_timer_main_thread)
+        self.resign_button.clicked.connect(self.resign)
+        self.current_moves = 0
+
+
+    def resign(self):
+        if self.current_color == 'white' and self.current_moves == 0:
+            requests.post(F"https://lichess.org/api/board/game/{self.current_game}/abort",
+                          headers={"Authorization": f"Bearer {self.current_token}"})
+        elif self.current_color == 'black' and self.current_moves == 1:
+            requests.post(F"https://lichess.org/api/board/game/{self.current_game}/abort",
+                          headers={"Authorization": f"Bearer {self.current_token}"})
+        else:
+            requests.post(F"https://lichess.org/api/board/game/{self.current_game}/resign",
+                          headers={"Authorization": f"Bearer {self.current_token}"})
 
     def create_connected_layout(self):
         widget = QWidget()
@@ -216,6 +230,7 @@ class LichessInterface(QMainWindow):
     def handle_game_events(self, event):
         try:
             if event['type'] == 'gameState' and event['status'] != 'aborted':
+                self.current_moves += 1
                 self.move_timer.stop()
                 last_move = event['moves'].split()[-1]
                 white_time = event['wtime'] / 1000
@@ -290,6 +305,7 @@ class LichessInterface(QMainWindow):
         global CURRENT_BOARD
         if event['type'] == 'gameStart':
             self.switch_layout(2)
+            self.current_moves = 0
             if event['game']['source'] != 'ai':
                 self.opponent.setText(
                     f"{event['game']['opponent']['username']} ({event['game']['opponent']['rating']})")
