@@ -119,6 +119,7 @@ class SearchAGame(QDialog, Ui_Form):
         self.exit_timer = QTimer()
         self.exit_timer.timeout.connect(self.check_exit_queue)
         self.exit_timer.start(500)
+
     def check_exit_queue(self):
         global in_queue
         if not in_queue:

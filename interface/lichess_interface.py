@@ -3,7 +3,7 @@ import time
 
 from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QPushButton, QLabel,
                                QWidget, QGridLayout, QStackedLayout, QHBoxLayout)
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPixmap
 import serial
 import serial.tools.list_ports
@@ -51,12 +51,15 @@ INITIAL_BOARD = [['r', 'n', 'b', 'q', 'k', 'b', 'n', 'r'],
 ['P', 'P', 'P', 'P', 'P', 'P', 'P', 'P'],
 ['R', 'N', 'B', 'Q', 'K', 'B', 'N', 'R']]
 CURRENT_BOARD = copy.deepcopy(INITIAL_BOARD)
+from PySide6.QtCore import Signal
 
 
 class LichessInterface(QMainWindow):
+    start_timer_signal = Signal()
     def __init__(self):
         super().__init__()
 
+        self.to_move = 'white'
         self.current_token = None
         self.setWindowTitle("Lichess Interface")
         self.setGeometry(100, 100, 460, 542)
@@ -91,6 +94,9 @@ class LichessInterface(QMainWindow):
         self.initialize_board()
         self.current_color = 'white'
         self.update_board()
+        self.move_timer = QTimer()
+        self.move_timer.timeout.connect(self.update_time)
+        self.start_timer_signal.connect(self.start_timer_main_thread)
 
     def create_connected_layout(self):
         widget = QWidget()
@@ -210,16 +216,41 @@ class LichessInterface(QMainWindow):
     def handle_game_events(self, event):
         try:
             if event['type'] == 'gameState' and event['status'] != 'aborted':
+                self.move_timer.stop()
                 last_move = event['moves'].split()[-1]
                 white_time = event['wtime'] / 1000
                 black_time = event['btime'] / 1000
+                if len(event['moves'].split(' ')) % 2 == 0:
+                    self.to_move = 'white'
+                else:
+                    self.to_move = 'black'
                 self.your_time.setText(f'{int(white_time / 60)}:{int(white_time % 60):02d}')
                 self.opponent_time.setText(f'{int(black_time / 60)}:{int(black_time % 60):02d}')
                 self.last_move.setText(f'Last move: {self.translate_move(last_move)}')
                 self.make_ui_move(last_move)
                 self.update_board()
+                if len(event['moves'].split(' ')) >= 2:
+                    self.start_timer_signal.emit()  # Emite o sinal para iniciar o timer
         except:
-            print(event)
+            print(f"ERROR: {event}")
+
+    def start_timer_main_thread(self):
+        self.move_timer.start(1000)
+
+    def update_time(self):
+        print('reached')
+        if game_thread is False:
+            self.move_timer.stop()
+        elif self.to_move == 'white':
+            current_time_minutes = int(self.your_time.text().split(':')[0])
+            current_time_seconds = int(self.your_time.text().split(':')[1])
+            new_time = (current_time_minutes * 60 + current_time_seconds - 1)
+            self.your_time.setText(f'{int(new_time / 60)}:{int(new_time % 60):02d}')
+        else:
+            current_time_minutes = int(self.opponent_time.text().split(':')[0])
+            current_time_seconds = int(self.opponent_time.text().split(':')[1])
+            new_time = (current_time_minutes * 60 + current_time_seconds - 1)
+            self.opponent_time.setText(f'{int(new_time / 60)}:{int(new_time % 60):02d}')
 
     def make_ui_move(self, move):
         square_to_erase = move[0] + move[1]
@@ -277,7 +308,9 @@ class LichessInterface(QMainWindow):
         elif event['type'] == 'gameFinish':
             self.switch_layout(1)
             if event['game']['status']['name'] != 'aborted':
-                if event['game']['winner'] == 'black':
+                if not 'winner' in event['game']:
+                    self.result_label.setText('1/2-1/2')
+                elif event['game']['winner'] == 'black':
                     self.result_label.setText('0-1')
                 elif event['game']['winner'] == 'white':
                     self.result_label.setText('1-0')
@@ -286,7 +319,6 @@ class LichessInterface(QMainWindow):
             else:
                 self.result_label.setText('Aborted')
             self.current_game = None
-            time.sleep(3)
             game_thread = False
 
     def update_board(self):
