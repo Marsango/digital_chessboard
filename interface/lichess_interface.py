@@ -12,6 +12,7 @@ import threading
 import requests
 import copy
 from ConnectWindow import ConnectWindow
+from SearchAGame import SearchAGame
 
 
 def encontrar_porta_esp32():
@@ -69,7 +70,6 @@ class LichessInterface(QMainWindow):
         self.status_label = QLabel("Status: Disconnected")
         self.status_label.setAlignment(Qt.AlignCenter)
         self.layout.addWidget(self.status_label)
-
         self.misc_layout = QStackedLayout()
         self.layout.addLayout(self.misc_layout)
         self.central_widget.setLayout(self.layout)
@@ -208,15 +208,18 @@ class LichessInterface(QMainWindow):
                     return f'{move[2]}{move[3]}'
 
     def handle_game_events(self, event):
-        if event['type'] == 'gameState' and event['status'] != 'aborted':
-            last_move = event['moves'].split()[-1]
-            white_time = event['wtime'] / 100
-            black_time = event['btime'] / 100
-            self.your_time.setText(f'{int(white_time / 60)}:{int(white_time % 60):02d}')
-            self.opponent_time.setText(f'{int(black_time / 60)}:{int(black_time % 60):02d}')
-            self.last_move.setText(f'Last move: {self.translate_move(last_move)}')
-            self.make_ui_move(last_move)
-            self.update_board()
+        try:
+            if event['type'] == 'gameState' and event['status'] != 'aborted':
+                last_move = event['moves'].split()[-1]
+                white_time = event['wtime'] / 1000
+                black_time = event['btime'] / 1000
+                self.your_time.setText(f'{int(white_time / 60)}:{int(white_time % 60):02d}')
+                self.opponent_time.setText(f'{int(black_time / 60)}:{int(black_time % 60):02d}')
+                self.last_move.setText(f'Last move: {self.translate_move(last_move)}')
+                self.make_ui_move(last_move)
+                self.update_board()
+        except:
+            print(event)
 
     def make_ui_move(self, move):
         square_to_erase = move[0] + move[1]
@@ -324,8 +327,8 @@ class LichessInterface(QMainWindow):
             queue_thread = False
 
     def new_game_lichess(self):
-        if self.current_token:
-            ...
+        self.search_a_game = SearchAGame(self.current_token)
+        self.search_a_game.show()
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ class MessageWindow(QDialog, Ui_Dialog):
     def __init__(self, message) -> None:
         super(MessageWindow, self).__init__()
         self.setupUi(self)
-        self.setWindowTitle('Conectar')
+        self.setWindowTitle('Alert!')
         self.message.setText(message)
         self.Ok.clicked.connect(self.close)
 

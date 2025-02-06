@@ -11,7 +11,7 @@ class ConnectWindow(QDialog, Ui_Dialog):
     def __init__(self) -> None:
         super(ConnectWindow, self).__init__()
         self.setupUi(self)
-        self.setWindowTitle('Conectar')
+        self.setWindowTitle('Connect')
         self.pushButton.clicked.connect(self.connect_to_lichess)
         self.pushButton_2.clicked.connect(self.close)
 
