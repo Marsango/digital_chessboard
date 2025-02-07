@@ -59,8 +59,7 @@ class SearchAGame(QDialog, Ui_Form):
                                 headers={"Authorization": f"Bearer {self.current_token}",
                                          "Content-Type": "application/x-www-form-urlencoded"},
                                 data=challenge_params)
-        print(response)
-        print(response.text)
+
 
     def put_in_queue(self):
         global in_queue
@@ -83,7 +82,7 @@ class SearchAGame(QDialog, Ui_Form):
                 if line:
                     print(line)
         in_queue = False
-        print('conexao finalizada')
+
 
     def challenge_player(self):
         global in_queue

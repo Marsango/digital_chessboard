@@ -2,7 +2,7 @@ import sys
 import time
 
 from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QPushButton, QLabel,
-                               QWidget, QGridLayout, QStackedLayout, QHBoxLayout)
+                               QWidget, QGridLayout, QStackedLayout, QHBoxLayout, QFrame)
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPixmap
 import serial
@@ -13,6 +13,7 @@ import requests
 import copy
 from ConnectWindow import ConnectWindow
 from SearchAGame import SearchAGame
+from ClockWidget import ClockWidget
 
 
 def encontrar_porta_esp32():
@@ -56,15 +57,17 @@ from PySide6.QtCore import Signal
 
 class LichessInterface(QMainWindow):
     start_timer_signal = Signal()
+    game_start_signal = Signal()
+    game_finish_signal = Signal()
     def __init__(self):
         super().__init__()
 
         self.to_move = 'white'
         self.current_token = None
         self.setWindowTitle("Lichess Interface")
-        self.setGeometry(100, 100, 460, 542)
+        self.setGeometry(100, 100, 460, 600)
         self.setMaximumWidth(460)
-        self.setMaximumHeight(542)
+        self.setMaximumHeight(600)
         self.setWindowIcon(QPixmap('images/black-knight.png'))
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
@@ -72,25 +75,40 @@ class LichessInterface(QMainWindow):
         self.layout = QVBoxLayout()
         self.status_label = QLabel("Status: Disconnected")
         self.status_label.setAlignment(Qt.AlignCenter)
+        self.top_header = QFrame()
+        self.top_header_layout = QHBoxLayout(self.top_header)
         self.layout.addWidget(self.status_label)
+        self.layout.addWidget(self.top_header)
         self.misc_layout = QStackedLayout()
-        self.layout.addLayout(self.misc_layout)
+        self.top_header_layout.addLayout(self.misc_layout)
+        self.opponent_time = ClockWidget(
+        )
+        self.top_header_layout.addWidget(self.opponent_time)
+        self.opponent_time.hide()
         self.central_widget.setLayout(self.layout)
         self.connect_layout = self.create_connect_layout()
         self.connected_layout = self.create_connected_layout()
         self.in_game_layout = self.create_in_game_layout()
-
         self.misc_layout.addWidget(self.connect_layout)
         self.misc_layout.addWidget(self.connected_layout)
         self.misc_layout.addWidget(self.in_game_layout)
         self.switch_layout(0)
         # Add components to the interface
-
+        self.board_widget = QWidget()
         self.board_layout = QGridLayout()
-        self.layout.addLayout(self.board_layout)
+        self.bug_solver = QVBoxLayout(self.board_widget)
+        self.bug_solver.addLayout(self.board_layout)
+        self.layout.addWidget(self.board_widget)
+        self.your_time = ClockWidget()
+        # Use QHBoxLayout to align the clock to the right
+        self.clock_layout = QHBoxLayout()
+        self.clock_layout.addStretch()  # Push the widget to the right
+        self.clock_layout.addWidget(self.your_time)
 
+        # Add the clock_layout to the main layout
+        self.layout.addLayout(self.clock_layout)
+        self.your_time.hide()
         self.cells = []
-        self.selected_cell = None  # Track the selected cell
         self.initialize_board()
         self.current_color = 'white'
         self.update_board()
@@ -99,7 +117,11 @@ class LichessInterface(QMainWindow):
         self.start_timer_signal.connect(self.start_timer_main_thread)
         self.resign_button.clicked.connect(self.resign)
         self.current_moves = 0
-
+        self.game_start_signal.connect(self.your_time.show)
+        self.game_start_signal.connect(self.opponent_time.show)
+        self.game_start_signal.connect(lambda: self.switch_layout(2))
+        self.game_finish_signal.connect(self.your_time.hide)
+        self.game_finish_signal.connect(self.opponent_time.hide)
 
     def resign(self):
         if self.current_color == 'white' and self.current_moves == 0:
@@ -136,14 +158,11 @@ class LichessInterface(QMainWindow):
         self.resign_button = QPushButton("Resign")
         self.opponent = QLabel("Unknown (00)")
         self.last_move = QLabel("e4")
-        self.your_time = QLabel("1:00")
-        self.opponent_time = QLabel("1:00")
         layout = QHBoxLayout(widget)
         layout.addWidget(self.resign_button)
         layout.addWidget(self.opponent)
         layout.addWidget(self.last_move)
-        layout.addWidget(self.your_time)
-        layout.addWidget(self.opponent_time)
+        widget.setMinimumWidth(100)
         return widget
 
     def switch_layout(self, index):
@@ -239,8 +258,12 @@ class LichessInterface(QMainWindow):
                     self.to_move = 'white'
                 else:
                     self.to_move = 'black'
-                self.your_time.setText(f'{int(white_time / 60)}:{int(white_time % 60):02d}')
-                self.opponent_time.setText(f'{int(black_time / 60)}:{int(black_time % 60):02d}')
+                if self.current_color == 'white':
+                    self.your_time.setText(f'{int(white_time / 60):02d}:{int(white_time % 60):02d}')
+                    self.opponent_time.setText(f'{int(black_time / 60):02d}:{int(black_time % 60):02d}')
+                else:
+                    self.your_time.setText(f'{int(black_time / 60):02d}:{int(black_time % 60):02d}')
+                    self.opponent_time.setText(f'{int(white_time / 60):02d}:{int(white_time % 60):02d}')
                 self.last_move.setText(f'Last move: {self.translate_move(last_move)}')
                 self.make_ui_move(last_move)
                 self.update_board()
@@ -256,7 +279,7 @@ class LichessInterface(QMainWindow):
         print('reached')
         if game_thread is False:
             self.move_timer.stop()
-        elif self.to_move == 'white':
+        elif (self.to_move == 'white' and self.current_color == 'white') or (self.to_move == 'black' and self.current_color == 'black'):
             current_time_minutes = int(self.your_time.text().split(':')[0])
             current_time_seconds = int(self.your_time.text().split(':')[1])
             new_time = (current_time_minutes * 60 + current_time_seconds - 1)
@@ -304,7 +327,7 @@ class LichessInterface(QMainWindow):
         global game_thread
         global CURRENT_BOARD
         if event['type'] == 'gameStart':
-            self.switch_layout(2)
+            self.game_start_signal.emit()
             self.current_moves = 0
             if event['game']['source'] != 'ai':
                 self.opponent.setText(
@@ -314,14 +337,15 @@ class LichessInterface(QMainWindow):
             self.current_game = event['game']['gameId']
             self.current_color = event['game']["color"]
             self.last_move.setText('Last move: --')
-            self.your_time.setText('-:--')
-            self.opponent_time.setText('-:--')
+            self.your_time.setText('--:--')
+            self.opponent_time.setText('--:--')
             CURRENT_BOARD = copy.deepcopy(INITIAL_BOARD)
             self.update_board()
             game_thread = True
             thread = threading.Thread(target=self.stream_game, daemon=True)
             thread.start()
         elif event['type'] == 'gameFinish':
+            self.game_finish_signal.emit()
             self.switch_layout(1)
             if event['game']['status']['name'] != 'aborted':
                 if not 'winner' in event['game']:
@@ -375,7 +399,9 @@ class LichessInterface(QMainWindow):
             queue_thread = False
 
     def new_game_lichess(self):
+        self.your_time.hide()
         self.search_a_game = SearchAGame(self.current_token)
+        self.game_start_signal.connect(self.search_a_game.close)
         self.search_a_game.show()
 
 
