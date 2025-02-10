@@ -1,32 +1,24 @@
 import sys
 import time
+import copy
+import json
+import logging
+import requests
 
 from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QPushButton, QLabel,
                                QWidget, QGridLayout, QStackedLayout, QHBoxLayout, QFrame)
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QThread, Signal
 from PySide6.QtGui import QPixmap
-import serial
-import serial.tools.list_ports
-import json
-import threading
-import requests
-import copy
+
 from ConnectWindow import ConnectWindow
 from SearchAGame import SearchAGame
 from ClockWidget import ClockWidget
 
+# Configuração do logger
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-def encontrar_porta_esp32():
-    portas = serial.tools.list_ports.comports()
-    for porta in portas:
-        if "USB" in porta.description or "UART" in porta.description or "CP210" in porta.description:
-            return porta.device
-    return None
-
-
-queue_thread = True
-game_thread = True
-
+# Mapeamento das peças para os caminhos das imagens
 PIECES = {
     'P': 'images/white-pawn.png',
     'p': 'images/black-pawn.png',
@@ -42,50 +34,262 @@ PIECES = {
     'k': 'images/black-king.png',
 }
 
-# Configuração inicial do tabuleiro em formato FEN simplificado
-INITIAL_BOARD = [['r', 'n', 'b', 'q', 'k', 'b', 'n', 'r'],
-['p', 'p', 'p', 'p', 'p', 'p', 'p', 'p'],
-['.', '.', '.', '.', '.', '.', '.', '.'],
-['.', '.', '.', '.', '.', '.', '.', '.'],
-['.', '.', '.', '.', '.', '.', '.', '.'],
-['.', '.', '.', '.', '.', '.', '.', '.'],
-['P', 'P', 'P', 'P', 'P', 'P', 'P', 'P'],
-['R', 'N', 'B', 'Q', 'K', 'B', 'N', 'R']]
-CURRENT_BOARD = copy.deepcopy(INITIAL_BOARD)
-from PySide6.QtCore import Signal
+# Configuração inicial do tabuleiro (FEN simplificado)
+INITIAL_BOARD = [
+    ['r', 'n', 'b', 'q', 'k', 'b', 'n', 'r'],
+    ['p', 'p', 'p', 'p', 'p', 'p', 'p', 'p'],
+    ['.', '.', '.', '.', '.', '.', '.', '.'],
+    ['.', '.', '.', '.', '.', '.', '.', '.'],
+    ['.', '.', '.', '.', '.', '.', '.', '.'],
+    ['.', '.', '.', '.', '.', '.', '.', '.'],
+    ['P', 'P', 'P', 'P', 'P', 'P', 'P', 'P'],
+    ['R', 'N', 'B', 'Q', 'K', 'B', 'N', 'R']
+]
 
+# =============================================================================
+# Classe para gerenciar o estado do tabuleiro
+# =============================================================================
+class ChessBoard:
+    """
+    Gerencia o estado interno do tabuleiro de xadrez e operações relacionadas.
+    """
+    def __init__(self):
+        self.state = copy.deepcopy(INITIAL_BOARD)
+    
+    def reset_board(self):
+        """Reseta o tabuleiro para a posição inicial."""
+        self.state = copy.deepcopy(INITIAL_BOARD)
+    
+    @staticmethod
+    def letter_position(letter):
+        """Converte uma letra (ex.: 'a') para um índice numérico (0 para 'a')."""
+        return ord(letter.lower()) - ord('a')
+    
+    def apply_move(self, move):
+        """
+        Atualiza o estado do tabuleiro aplicando o movimento dado.
+        Suporta roque, promoção e movimento normal.
+        """
+        start = move[:2]
+        end = move[2:4]
+        # Roque
+        if start == 'e1' and end == 'g1' and self.state[7][4].upper() == 'K':
+            self.state[7][6] = 'K'
+            self.state[7][5] = 'R'
+            self.state[7][4] = '.'
+            self.state[7][7] = '.'
+        elif start == 'e1' and end == 'c1' and self.state[7][4].upper() == 'K':
+            self.state[7][2] = 'K'
+            self.state[7][3] = 'R'
+            self.state[7][4] = '.'
+            self.state[7][0] = '.'
+        elif start == 'e8' and end == 'g8' and self.state[0][4] == 'k':
+            self.state[0][6] = 'k'
+            self.state[0][5] = 'r'
+            self.state[0][4] = '.'
+            self.state[0][7] = '.'
+        elif start == 'e8' and end == 'c8' and self.state[0][4] == 'k':
+            self.state[0][2] = 'k'
+            self.state[0][3] = 'r'
+            self.state[0][4] = '.'
+            self.state[0][0] = '.'
+        # Promoção (movimento com 5 caracteres, ex.: "e7e8q")
+        elif len(move) == 5:
+            start_row = 8 - int(start[1])
+            start_col = self.letter_position(start[0])
+            end_row = 8 - int(end[1])
+            end_col = self.letter_position(end[0])
+            self.state[start_row][start_col] = '.'
+            promoted_piece = move[4]
+            # Define a peça promovida conforme a cor
+            if promoted_piece.isalpha():
+                promoted_piece = promoted_piece.upper() if promoted_piece.isupper() else promoted_piece.lower()
+            self.state[end_row][end_col] = promoted_piece
+        else:
+            # Movimento normal
+            start_row = 8 - int(start[1])
+            start_col = self.letter_position(start[0])
+            end_row = 8 - int(end[1])
+            end_col = self.letter_position(end[0])
+            self.state[end_row][end_col] = self.state[start_row][start_col]
+            self.state[start_row][start_col] = '.'
+    
+    def translate_move(self, move):
+        """
+        Converte um movimento no formato UCI para uma notação simplificada.
+        Essa tradução é simplificada e pode não cobrir todos os casos.
+        """
+        start = move[:2]
+        end = move[2:4]
+        promotion = move[4] if len(move) == 5 else None
+        
+        # Roque
+        if start == 'e1' and end == 'g1' and self.state[7][4].upper() == 'K':
+            return 'O-O'
+        elif start == 'e1' and end == 'c1' and self.state[7][4].upper() == 'K':
+            return 'O-O-O'
+        elif start == 'e8' and end == 'g8' and self.state[0][4] == 'k':
+            return 'O-O'
+        elif start == 'e8' and end == 'c8' and self.state[0][4] == 'k':
+            return 'O-O-O'
+        
+        start_row = 8 - int(start[1])
+        start_col = self.letter_position(start[0])
+        end_row = 8 - int(end[1])
+        end_col = self.letter_position(end[0])
+        moving_piece = self.state[start_row][start_col]
+        target_piece = self.state[end_row][end_col]
+        
+        # Promoção
+        if promotion:
+            if target_piece != '.':
+                return f"{start[0]}x{end}={promotion.upper() if moving_piece.isupper() else promotion.lower()}"
+            else:
+                return f"{end}={promotion.upper() if moving_piece.isupper() else promotion.lower()}"
+        
+        # Movimento de peão
+        if moving_piece.lower() == 'p':
+            if target_piece != '.':
+                return f"{start[0]}x{end}"
+            else:
+                return f"{end}"
+        else:
+            piece_letter = moving_piece.upper() if moving_piece != '.' else ''
+            if target_piece != '.':
+                return f"{piece_letter}x{end}"
+            else:
+                return f"{piece_letter}{end}"
 
+# =============================================================================
+# Threads para streaming dos eventos do Lichess
+# =============================================================================
+class LichessEventStreamThread(QThread):
+    """
+    Thread para streaming de eventos gerais do Lichess.
+    """
+    event_received = Signal(dict)
+    error = Signal(str)
+    
+    def __init__(self, token, parent=None):
+        super().__init__(parent)
+        self.token = token
+        self._running = True
+    
+    def run(self):
+        url = "https://lichess.org/api/stream/event"
+        headers = {"Authorization": f"Bearer {self.token}"}
+        try:
+            with requests.get(url, headers=headers, stream=True) as response:
+                if response.status_code != 200:
+                    self.error.emit(f"Erro: HTTP {response.status_code}")
+                    return
+                for line in response.iter_lines():
+                    if not self._running:
+                        break
+                    if line:
+                        try:
+                            event = json.loads(line)
+                            self.event_received.emit(event)
+                        except Exception as e:
+                            self.error.emit(str(e))
+        except Exception as e:
+            self.error.emit(str(e))
+    
+    def stop(self):
+        self._running = False
+
+class LichessGameStreamThread(QThread):
+    """
+    Thread para streaming dos eventos de um jogo específico.
+    """
+    event_received = Signal(dict)
+    error = Signal(str)
+    
+    def __init__(self, token, game_id, parent=None):
+        super().__init__(parent)
+        self.token = token
+        self.game_id = game_id
+        self._running = True
+    
+    def run(self):
+        url = f"https://lichess.org/api/board/game/stream/{self.game_id}"
+        headers = {"Authorization": f"Bearer {self.token}"}
+        try:
+            with requests.get(url, headers=headers, stream=True) as response:
+                if response.status_code != 200:
+                    self.error.emit(f"Erro: HTTP {response.status_code}")
+                    return
+                for line in response.iter_lines():
+                    if not self._running:
+                        break
+                    if line:
+                        try:
+                            event = json.loads(line)
+                            self.event_received.emit(event)
+                        except Exception as e:
+                            self.error.emit(str(e))
+        except Exception as e:
+            self.error.emit(str(e))
+    
+    def stop(self):
+        self._running = False
+
+# =============================================================================
+# Classe principal da interface gráfica
+# =============================================================================
 class LichessInterface(QMainWindow):
+    """
+    Interface gráfica para interagir com a API do Lichess.
+    """
     start_timer_signal = Signal()
     game_start_signal = Signal()
     game_finish_signal = Signal()
+    
     def __init__(self):
         super().__init__()
-
-        self.to_move = 'white'
-        self.current_token = None
         self.setWindowTitle("Lichess Interface")
         self.setGeometry(100, 100, 460, 600)
         self.setMaximumWidth(460)
         self.setMaximumHeight(600)
         self.setWindowIcon(QPixmap('images/black-knight.png'))
+        
+        # Variáveis de controle
+        self.current_token = None
+        self.current_game = None
+        self.current_color = 'white'
+        self.to_move = 'white'
+        self.current_moves = 0
+        
+        # Instância do tabuleiro
+        self.chess_board = ChessBoard()
+        
+        # Threads de streaming
+        self.event_thread = None
+        self.game_thread = None
+        
+        # Configuração da interface gráfica
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
-
         self.layout = QVBoxLayout()
+        self.central_widget.setLayout(self.layout)
+        
         self.status_label = QLabel("Status: Disconnected")
         self.status_label.setAlignment(Qt.AlignCenter)
+        self.layout.addWidget(self.status_label)
+        
+        # Header: layout empilhado e relógios
         self.top_header = QFrame()
         self.top_header_layout = QHBoxLayout(self.top_header)
-        self.layout.addWidget(self.status_label)
         self.layout.addWidget(self.top_header)
+        
         self.misc_layout = QStackedLayout()
         self.top_header_layout.addLayout(self.misc_layout)
-        self.opponent_time = ClockWidget(
-        )
+        
+        self.opponent_time = ClockWidget()
         self.top_header_layout.addWidget(self.opponent_time)
         self.opponent_time.hide()
-        self.central_widget.setLayout(self.layout)
+        
+        # Layouts para diferentes estados (conectar, conectado, em jogo)
         self.connect_layout = self.create_connect_layout()
         self.connected_layout = self.create_connected_layout()
         self.in_game_layout = self.create_in_game_layout()
@@ -93,48 +297,45 @@ class LichessInterface(QMainWindow):
         self.misc_layout.addWidget(self.connected_layout)
         self.misc_layout.addWidget(self.in_game_layout)
         self.switch_layout(0)
-        # Add components to the interface
+        
+        # Tabuleiro gráfico
         self.board_widget = QWidget()
         self.board_layout = QGridLayout()
-        self.bug_solver = QVBoxLayout(self.board_widget)
-        self.bug_solver.addLayout(self.board_layout)
+        self.board_widget.setLayout(self.board_layout)
         self.layout.addWidget(self.board_widget)
-        self.your_time = ClockWidget()
-        # Use QHBoxLayout to align the clock to the right
-        self.clock_layout = QHBoxLayout()
-        self.clock_layout.addStretch()  # Push the widget to the right
-        self.clock_layout.addWidget(self.your_time)
-
-        # Add the clock_layout to the main layout
-        self.layout.addLayout(self.clock_layout)
-        self.your_time.hide()
         self.cells = []
         self.initialize_board()
-        self.current_color = 'white'
-        self.update_board()
+        
+        # Relógios
+        self.your_time = ClockWidget()
+        self.clock_layout = QHBoxLayout()
+        self.clock_layout.addStretch()
+        self.clock_layout.addWidget(self.your_time)
+        self.layout.addLayout(self.clock_layout)
+        self.your_time.hide()
+        
+        # Timer e conexões de sinais
         self.move_timer = QTimer()
         self.move_timer.timeout.connect(self.update_time)
         self.start_timer_signal.connect(self.start_timer_main_thread)
         self.resign_button.clicked.connect(self.resign)
-        self.current_moves = 0
         self.game_start_signal.connect(self.your_time.show)
         self.game_start_signal.connect(self.opponent_time.show)
         self.game_start_signal.connect(lambda: self.switch_layout(2))
         self.game_finish_signal.connect(self.your_time.hide)
         self.game_finish_signal.connect(self.opponent_time.hide)
-
-    def resign(self):
-        if self.current_color == 'white' and self.current_moves == 0:
-            requests.post(F"https://lichess.org/api/board/game/{self.current_game}/abort",
-                          headers={"Authorization": f"Bearer {self.current_token}"})
-        elif self.current_color == 'black' and self.current_moves == 1:
-            requests.post(F"https://lichess.org/api/board/game/{self.current_game}/abort",
-                          headers={"Authorization": f"Bearer {self.current_token}"})
-        else:
-            requests.post(F"https://lichess.org/api/board/game/{self.current_game}/resign",
-                          headers={"Authorization": f"Bearer {self.current_token}"})
-
+    
+    def create_connect_layout(self):
+        """Cria o layout de conexão com o Lichess."""
+        widget = QWidget()
+        self.connect_button = QPushButton("Connect to Lichess")
+        self.connect_button.clicked.connect(self.connect_to_lichess)
+        layout = QVBoxLayout(widget)
+        layout.addWidget(self.connect_button)
+        return widget
+    
     def create_connected_layout(self):
+        """Cria o layout para o estado conectado."""
         widget = QWidget()
         self.result_label = QLabel("Result: --")
         self.result_label.setAlignment(Qt.AlignCenter)
@@ -144,271 +345,222 @@ class LichessInterface(QMainWindow):
         layout.addWidget(self.result_label)
         layout.addWidget(self.new_game_button)
         return widget
-
-    def create_connect_layout(self):
-        widget = QWidget()
-        self.connect_button = QPushButton("Connect to Lichess")
-        self.connect_button.clicked.connect(self.connect_to_lichess)
-        layout = QVBoxLayout(widget)
-        layout.addWidget(self.connect_button)
-        return widget
-
+    
     def create_in_game_layout(self):
+        """Cria o layout exibido durante a partida."""
         widget = QWidget()
         self.resign_button = QPushButton("Resign")
         self.opponent = QLabel("Unknown (00)")
-        self.last_move = QLabel("e4")
+        self.last_move = QLabel("Last move: --")
         layout = QHBoxLayout(widget)
         layout.addWidget(self.resign_button)
         layout.addWidget(self.opponent)
         layout.addWidget(self.last_move)
         widget.setMinimumWidth(100)
         return widget
-
+    
     def switch_layout(self, index):
+        """Alterna entre os layouts empilhados."""
         self.misc_layout.setCurrentIndex(index)
-
+    
     def initialize_board(self):
-        """Creates a simple 8x8 chess board with placeholders."""
-        for row, line in enumerate(CURRENT_BOARD):
+        """
+        Cria o tabuleiro gráfico (8x8) com células representadas por QLabel.
+        """
+        self.cells = []  # Reinicia a lista de células
+        for row in range(8):
             row_cells = []
-            for col, piece in enumerate(line):
+            for col in range(8):
                 cell = QLabel()
                 cell.setFixedSize(50, 50)
                 cell.setAlignment(Qt.AlignCenter)
-
-                # Define a cor da célula
+                # Células com cores alternadas
                 if (row + col) % 2 == 0:
                     cell.setStyleSheet("background-color: white; border: 1px solid black;")
                 else:
                     cell.setStyleSheet("background-color: gray; border: 1px solid black;")
-
-                # Adiciona a peça, se houver
-                if piece != '.':
-                    pixmap = QPixmap(PIECES[piece])
-                    cell.setPixmap(pixmap.scaled(50, 50, Qt.KeepAspectRatio))
-
                 self.board_layout.addWidget(cell, row, col)
                 row_cells.append(cell)
             self.cells.append(row_cells)
-
-    def stream_lichess_events(self):
-        global queue_thread
-        url = "https://lichess.org/api/stream/event"
-        headers = {"Authorization": f"Bearer {self.current_token}"}
-
-        with requests.get(url, headers=headers, stream=True) as response:
-            for line in response.iter_lines():
-                if not queue_thread:
-                    print("Encerrando a thread...")
-                    break
-                if line:
-                    event = json.loads(line)
-                    print(f"Evento recebido: {event}")
-                    self.handle_event(event)
-
-    def stream_game(self):
-        global game_thread
-        url = f"https://lichess.org/api/board/game/stream/{self.current_game}"
-        headers = {"Authorization": f"Bearer {self.current_token}"}
-
-        with requests.get(url, headers=headers, stream=True) as response:
-            for line in response.iter_lines():
-                if not game_thread:
-                    print("Encerrando a thread...")
-                    break
-                if line:
-                    event = json.loads(line)
-                    print(f"Evento recebido: {event}")
-                    self.handle_game_events(event)
-
-    def letter_position(self, letter):
-        return ord(letter.lower()) - ord('a')
-
-    def translate_move(self, move):
-        if len(move) == 5:
-            return f'{move[2]}{move[3]}={move[4]}'
-        else:
-            square_to_erase = move[0] + move[1]
-            square_to_fill = move[2] + move[3]
-            if (square_to_erase == 'e1' and square_to_fill == 'g1' and CURRENT_BOARD[7][4].upper()) == 'K' or ( square_to_erase == 'e8' and square_to_fill == 'g8' and CURRENT_BOARD[0][4] == 'k'):
-                return 'O-O'
-            elif (square_to_erase == 'e1' and square_to_fill == 'c1' and CURRENT_BOARD[7][4].upper() == 'K') or (square_to_erase == 'e8' and square_to_fill == 'c8' and CURRENT_BOARD[0][4] == 'k'):
-                return 'O-O-O'
-            elif CURRENT_BOARD[8 - int(move[1])][self.letter_position(move[0])].lower() != 'p':
-                if CURRENT_BOARD[8 - int(move[3])][self.letter_position(move[2])].lower() != '.':
-                    return f'{CURRENT_BOARD[8 - int(move[1])][self.letter_position(move[0])].upper()}x{move[2]}{move[3]}'
-                else:
-                    return f'{CURRENT_BOARD[8 - int(move[1])][self.letter_position(move[0])].upper()}{move[2]}{move[3]}'
-            else:
-                if CURRENT_BOARD[8 - int(move[3])][self.letter_position(move[2])].lower() != '.':
-                    return f'{move[0]}x{move[2]}{move[3]}'
-                else:
-                    return f'{move[2]}{move[3]}'
-
-    def handle_game_events(self, event):
-        try:
-            if event['type'] == 'gameState' and event['status'] != 'aborted':
-                self.current_moves += 1
-                self.move_timer.stop()
-                last_move = event['moves'].split()[-1]
-                white_time = event['wtime'] / 1000
-                black_time = event['btime'] / 1000
-                if len(event['moves'].split(' ')) % 2 == 0:
-                    self.to_move = 'white'
-                else:
-                    self.to_move = 'black'
-                if self.current_color == 'white':
-                    self.your_time.setText(f'{int(white_time / 60):02d}:{int(white_time % 60):02d}')
-                    self.opponent_time.setText(f'{int(black_time / 60):02d}:{int(black_time % 60):02d}')
-                else:
-                    self.your_time.setText(f'{int(black_time / 60):02d}:{int(black_time % 60):02d}')
-                    self.opponent_time.setText(f'{int(white_time / 60):02d}:{int(white_time % 60):02d}')
-                self.last_move.setText(f'Last move: {self.translate_move(last_move)}')
-                self.make_ui_move(last_move)
-                self.update_board()
-                if len(event['moves'].split(' ')) >= 2:
-                    self.start_timer_signal.emit()  # Emite o sinal para iniciar o timer
-        except:
-            print(f"ERROR: {event}")
-
-    def start_timer_main_thread(self):
-        self.move_timer.start(1000)
-
-    def update_time(self):
-        print('reached')
-        if game_thread is False:
-            self.move_timer.stop()
-        elif (self.to_move == 'white' and self.current_color == 'white') or (self.to_move == 'black' and self.current_color == 'black'):
-            current_time_minutes = int(self.your_time.text().split(':')[0])
-            current_time_seconds = int(self.your_time.text().split(':')[1])
-            new_time = (current_time_minutes * 60 + current_time_seconds - 1)
-            self.your_time.setText(f'{int(new_time / 60)}:{int(new_time % 60):02d}')
-        else:
-            current_time_minutes = int(self.opponent_time.text().split(':')[0])
-            current_time_seconds = int(self.opponent_time.text().split(':')[1])
-            new_time = (current_time_minutes * 60 + current_time_seconds - 1)
-            self.opponent_time.setText(f'{int(new_time / 60)}:{int(new_time % 60):02d}')
-
-    def make_ui_move(self, move):
-        square_to_erase = move[0] + move[1]
-        square_to_fill = move[2] + move[3]
-        if square_to_erase == 'e1' and square_to_fill == 'g1' and CURRENT_BOARD[7][4].upper() == 'K':
-            CURRENT_BOARD[7][6] = 'K'
-            CURRENT_BOARD[7][5] = 'R'
-            CURRENT_BOARD[7][4] = '.'
-            CURRENT_BOARD[7][7] = '.'
-        elif square_to_erase == 'e1' and square_to_fill == 'c1' and CURRENT_BOARD[7][4].upper() == 'K':
-            CURRENT_BOARD[7][2] = 'K'
-            CURRENT_BOARD[7][3] = 'R'
-            CURRENT_BOARD[7][4] = '.'
-            CURRENT_BOARD[7][0] = '.'
-        elif square_to_erase == 'e8' and square_to_fill == 'g8' and CURRENT_BOARD[0][4] == 'k':
-            CURRENT_BOARD[0][6] = 'k'
-            CURRENT_BOARD[0][5] = 'r'
-            CURRENT_BOARD[0][4] = '.'
-            CURRENT_BOARD[0][7] = '.'
-        elif square_to_erase == 'e8' and square_to_fill == 'c8' and CURRENT_BOARD[0][4] == 'k':
-            CURRENT_BOARD[0][2] = 'k'
-            CURRENT_BOARD[0][3] = 'r'
-            CURRENT_BOARD[0][4] = '.'
-            CURRENT_BOARD[0][0] = '.'
-        elif square_to_erase[1] == '7' and CURRENT_BOARD[8 - int(square_to_erase[1])][self.letter_position(square_to_erase[0])] == 'P':
-            CURRENT_BOARD[8 - int(square_to_erase[1])][self.letter_position(square_to_erase[0])] = '.'
-            CURRENT_BOARD[8 - int(square_to_fill[1])][self.letter_position(square_to_fill[0])] = move[-1].upper()
-        elif square_to_erase[1] == '2' and CURRENT_BOARD[8 - int(square_to_erase[1])][self.letter_position(square_to_erase[0])] == 'p':
-            CURRENT_BOARD[8 - int(square_to_erase[1])][self.letter_position(square_to_erase[0])] = '.'
-            CURRENT_BOARD[8 - int(square_to_fill[1])][self.letter_position(square_to_fill[0])] = move[-1].lower()
-        else:
-            CURRENT_BOARD[8 - int(square_to_fill[1])][self.letter_position(square_to_fill[0])] = CURRENT_BOARD[8 - int(square_to_erase[1])][self.letter_position(square_to_erase[0])]
-            CURRENT_BOARD[8 - int(square_to_erase[1])][self.letter_position(square_to_erase[0])] = '.'
-
-    def handle_event(self, event):
-        global game_thread
-        global CURRENT_BOARD
-        if event['type'] == 'gameStart':
-            self.game_start_signal.emit()
-            self.current_moves = 0
-            if event['game']['source'] != 'ai':
-                self.opponent.setText(
-                    f"{event['game']['opponent']['username']} ({event['game']['opponent']['rating']})")
-            else:
-                self.opponent.setText(f"{event['game']['opponent']['username']}")
-            self.current_game = event['game']['gameId']
-            self.current_color = event['game']["color"]
-            self.last_move.setText('Last move: --')
-            self.your_time.setText('--:--')
-            self.opponent_time.setText('--:--')
-            CURRENT_BOARD = copy.deepcopy(INITIAL_BOARD)
-            self.update_board()
-            game_thread = True
-            thread = threading.Thread(target=self.stream_game, daemon=True)
-            thread.start()
-        elif event['type'] == 'gameFinish':
-            self.game_finish_signal.emit()
-            self.switch_layout(1)
-            if event['game']['status']['name'] != 'aborted':
-                if not 'winner' in event['game']:
-                    self.result_label.setText('1/2-1/2')
-                elif event['game']['winner'] == 'black':
-                    self.result_label.setText('0-1')
-                elif event['game']['winner'] == 'white':
-                    self.result_label.setText('1-0')
-                else:
-                    self.result_label.setText('1/2-1/2')
-            else:
-                self.result_label.setText('Aborted')
-            self.current_game = None
-            game_thread = False
-
+        self.update_board()
+    
     def update_board(self):
-        """Atualiza a interface gráfica com base no estado atual do tabuleiro."""
+        """
+        Atualiza as imagens do tabuleiro com base no estado atual armazenado em self.chess_board.
+        Se o jogador for preto, inverte a exibição.
+        """
         for row in range(8):
             for col in range(8):
                 if self.current_color == 'black':
                     cell = self.cells[7 - row][7 - col]
                 else:
                     cell = self.cells[row][col]
-                piece = CURRENT_BOARD[row][col]
-
-                # Atualiza a peça exibida
+                piece = self.chess_board.state[row][col]
                 if piece != ".":
-                    pixmap = QPixmap(PIECES[piece])
+                    pixmap = QPixmap(PIECES.get(piece, ""))
                     cell.setPixmap(pixmap.scaled(50, 50, Qt.KeepAspectRatio))
                 else:
                     cell.setPixmap(QPixmap())
-
-
+    
     def connect_to_lichess(self):
-        """Connect to Lichess using the API token."""
+        """Abre a janela de conexão para inserir o token do Lichess."""
         self.connect_dialog = ConnectWindow()
         self.connect_dialog.user_data.connect(self.handle_connection)
         self.connect_dialog.show()
-
+    
     def handle_connection(self, data):
-        global queue_thread
-        self.current_token = data['token']
-        if data['token'] is not None:
-            self.status_label.setText(f"Connected as: {data['user']}")
+        """
+        Trata os dados recebidos da janela de conexão.
+        Se o token for válido, inicia o streaming de eventos.
+        """
+        self.current_token = data.get('token')
+        if self.current_token:
+            self.status_label.setText(f"Connected as: {data.get('user')}")
             self.switch_layout(1)
-            queue_thread = True
-            thread = threading.Thread(target=self.stream_lichess_events, daemon=True)
-            thread.start()
+            # Inicia o streaming de eventos gerais
+            self.event_thread = LichessEventStreamThread(self.current_token)
+            self.event_thread.event_received.connect(self.handle_event)
+            self.event_thread.error.connect(self.handle_error)
+            self.event_thread.start()
         else:
-            self.status_label.setText(f"Status: failed to connected")
-            queue_thread = False
-
+            self.status_label.setText("Status: failed to connect")
+    
+    def handle_event(self, event):
+        """
+        Processa os eventos gerais do Lichess.
+        Em 'gameStart', inicia o streaming dos eventos do jogo.
+        Em 'gameFinish', trata o término da partida.
+        """
+        event_type = event.get('type')
+        if event_type == 'gameStart':
+            self.game_start_signal.emit()
+            self.current_moves = 0
+            game_info = event.get('game', {})
+            if game_info.get('source') != 'ai':
+                opponent_info = game_info.get('opponent', {})
+                self.opponent.setText(f"{opponent_info.get('username', 'Unknown')} ({opponent_info.get('rating', '00')})")
+            else:
+                self.opponent.setText(f"{game_info.get('opponent', {}).get('username', 'Unknown')}")
+            self.current_game = game_info.get('gameId')
+            self.current_color = game_info.get("color", "white")
+            self.last_move.setText('Last move: --')
+            self.your_time.setText('--:--')
+            self.opponent_time.setText('--:--')
+            self.chess_board.reset_board()
+            self.update_board()
+            # Inicia o streaming dos eventos do jogo
+            self.game_thread = LichessGameStreamThread(self.current_token, self.current_game)
+            self.game_thread.event_received.connect(self.handle_game_events)
+            self.game_thread.error.connect(self.handle_error)
+            self.game_thread.start()
+        elif event_type == 'gameFinish':
+            self.game_finish_signal.emit()
+            self.switch_layout(1)
+            game_data = event.get('game', {})
+            status = game_data.get('status', {}).get('name', '')
+            if status != 'aborted':
+                if 'winner' not in game_data:
+                    self.result_label.setText('1/2-1/2')
+                elif game_data.get('winner') == 'black':
+                    self.result_label.setText('0-1')
+                elif game_data.get('winner') == 'white':
+                    self.result_label.setText('1-0')
+                else:
+                    self.result_label.setText('1/2-1/2')
+            else:
+                self.result_label.setText('Aborted')
+            self.current_game = None
+            if self.game_thread:
+                self.game_thread.stop()
+                self.game_thread.wait()
+                self.game_thread = None
+    
+    def handle_game_events(self, event):
+        """
+        Processa os eventos do jogo:
+          - Atualiza o tabuleiro aplicando o último movimento.
+          - Atualiza os relógios e exibe a notação do último movimento.
+        """
+        try:
+            if event.get('type') == 'gameState':
+                moves_str = event.get('moves', "")
+                moves_list = moves_str.split()
+                if moves_list:
+                    last_move = moves_list[-1]
+                    self.current_moves += 1
+                    self.chess_board.apply_move(last_move)
+                    translated_move = self.chess_board.translate_move(last_move)
+                    self.last_move.setText(f"Last move: {translated_move}")
+                    self.update_board()
+                white_time = event.get('wtime', 0) / 1000
+                black_time = event.get('btime', 0) / 1000
+                if len(moves_list) % 2 == 0:
+                    self.to_move = 'white'
+                else:
+                    self.to_move = 'black'
+                if self.current_color == 'white':
+                    self.your_time.setText(f"{int(white_time/60):02d}:{int(white_time%60):02d}")
+                    self.opponent_time.setText(f"{int(black_time/60):02d}:{int(black_time%60):02d}")
+                else:
+                    self.your_time.setText(f"{int(black_time/60):02d}:{int(black_time%60):02d}")
+                    self.opponent_time.setText(f"{int(white_time/60):02d}:{int(white_time%60):02d}")
+                if len(moves_list) >= 2:
+                    self.start_timer_signal.emit()
+        except Exception as e:
+            logger.error(f"Error in handle_game_events: {e}")
+    
+    def start_timer_main_thread(self):
+        """Inicia o timer para atualização dos relógios a cada segundo."""
+        self.move_timer.start(1000)
+    
+    def update_time(self):
+        """Atualiza os relógios decrementando 1 segundo a cada tick do timer."""
+        if self.to_move == 'white' and self.current_color == 'white':
+            minutes, seconds = map(int, self.your_time.text().split(':'))
+            total_seconds = minutes * 60 + seconds - 1
+            self.your_time.setText(f"{int(total_seconds/60):02d}:{int(total_seconds%60):02d}")
+        else:
+            minutes, seconds = map(int, self.opponent_time.text().split(':'))
+            total_seconds = minutes * 60 + seconds - 1
+            self.opponent_time.setText(f"{int(total_seconds/60):02d}:{int(total_seconds%60):02d}")
+    
+    def resign(self):
+        """
+        Envia uma requisição para desistir ou abortar o jogo,
+        conforme o estado atual dos lances.
+        """
+        if not self.current_game:
+            return
+        if self.current_color == 'white' and self.current_moves == 0:
+            endpoint = "abort"
+        elif self.current_color == 'black' and self.current_moves == 1:
+            endpoint = "abort"
+        else:
+            endpoint = "resign"
+        url = f"https://lichess.org/api/board/game/{self.current_game}/{endpoint}"
+        try:
+            response = requests.post(url, headers={"Authorization": f"Bearer {self.current_token}"})
+            if response.status_code != 200:
+                logger.error("Falha ao enviar desistência ou abortar o jogo.")
+        except Exception as e:
+            logger.error(f"Error in resign: {e}")
+    
     def new_game_lichess(self):
+        """Inicia uma nova partida no Lichess."""
         self.your_time.hide()
         self.search_a_game = SearchAGame(self.current_token)
         self.game_start_signal.connect(self.search_a_game.close)
         self.search_a_game.show()
+    
+    def handle_error(self, error_message):
+        """Trata erros emitidos pelas threads de streaming."""
+        logger.error(f"Stream error: {error_message}")
 
-
+# =============================================================================
+# Execução principal
+# =============================================================================
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-
     window = LichessInterface()
     window.show()
-
     sys.exit(app.exec())
