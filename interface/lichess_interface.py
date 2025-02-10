@@ -20,18 +20,18 @@ logger = logging.getLogger(__name__)
 
 # Mapeamento das peças para os caminhos das imagens
 PIECES = {
-    'P': 'images/white-pawn.png',
-    'p': 'images/black-pawn.png',
-    'R': 'images/white-rook.png',
-    'r': 'images/black-rook.png',
-    'N': 'images/white-knight.png',
-    'n': 'images/black-knight.png',
-    'B': 'images/white-bishop.png',
-    'b': 'images/black-bishop.png',
-    'Q': 'images/white-queen.png',
-    'q': 'images/black-queen.png',
-    'K': 'images/white-king.png',
-    'k': 'images/black-king.png',
+    'P': 'interface/images/white-pawn.png',
+    'p': 'interface/images/black-pawn.png',
+    'R': 'interface/images/white-rook.png',
+    'r': 'interface/images/black-rook.png',
+    'N': 'interface/images/white-knight.png',
+    'n': 'interface/images/black-knight.png',
+    'B': 'interface/images/white-bishop.png',
+    'b': 'interface/images/black-bishop.png',
+    'Q': 'interface/images/white-queen.png',
+    'q': 'interface/images/black-queen.png',
+    'K': 'interface/images/white-king.png',
+    'k': 'interface/images/black-king.png',
 }
 
 # Configuração inicial do tabuleiro (FEN simplificado)
@@ -101,9 +101,6 @@ class ChessBoard:
             end_col = self.letter_position(end[0])
             self.state[start_row][start_col] = '.'
             promoted_piece = move[4]
-            # Define a peça promovida conforme a cor
-            if promoted_piece.isalpha():
-                promoted_piece = promoted_piece.upper() if promoted_piece.isupper() else promoted_piece.lower()
             self.state[end_row][end_col] = promoted_piece
         else:
             # Movimento normal
@@ -242,6 +239,7 @@ class LichessInterface(QMainWindow):
     Interface gráfica para interagir com a API do Lichess.
     """
     start_timer_signal = Signal()
+    stop_timer_signal = Signal()  # Novo sinal para parar o timer na thread principal
     game_start_signal = Signal()
     game_finish_signal = Signal()
     
@@ -314,10 +312,13 @@ class LichessInterface(QMainWindow):
         self.layout.addLayout(self.clock_layout)
         self.your_time.hide()
         
-        # Timer e conexões de sinais
+        # Timer para atualizar os relógios
         self.move_timer = QTimer()
         self.move_timer.timeout.connect(self.update_time)
+        
+        # Conexões de sinais
         self.start_timer_signal.connect(self.start_timer_main_thread)
+        self.stop_timer_signal.connect(self.stop_timer_main_thread)
         self.resign_button.clicked.connect(self.resign)
         self.game_start_signal.connect(self.your_time.show)
         self.game_start_signal.connect(self.opponent_time.show)
@@ -378,7 +379,7 @@ class LichessInterface(QMainWindow):
                 if (row + col) % 2 == 0:
                     cell.setStyleSheet("background-color: white; border: 1px solid black;")
                 else:
-                    cell.setStyleSheet("background-color: gray; border: 1px solid black;")
+                    cell.setStyleSheet("background-color: green; border: 1px solid black;")
                 self.board_layout.addWidget(cell, row, col)
                 row_cells.append(cell)
             self.cells.append(row_cells)
@@ -454,6 +455,8 @@ class LichessInterface(QMainWindow):
             self.game_thread.error.connect(self.handle_error)
             self.game_thread.start()
         elif event_type == 'gameFinish':
+            # Para o timer via sinal (garante execução na thread principal)
+            self.stop_timer_signal.emit()
             self.game_finish_signal.emit()
             self.switch_layout(1)
             game_data = event.get('game', {})
@@ -513,16 +516,23 @@ class LichessInterface(QMainWindow):
         """Inicia o timer para atualização dos relógios a cada segundo."""
         self.move_timer.start(1000)
     
+    def stop_timer_main_thread(self):
+        """Para o timer (executado na thread principal)."""
+        self.move_timer.stop()
+    
     def update_time(self):
         """Atualiza os relógios decrementando 1 segundo a cada tick do timer."""
-        if self.to_move == 'white' and self.current_color == 'white':
-            minutes, seconds = map(int, self.your_time.text().split(':'))
-            total_seconds = minutes * 60 + seconds - 1
-            self.your_time.setText(f"{int(total_seconds/60):02d}:{int(total_seconds%60):02d}")
-        else:
-            minutes, seconds = map(int, self.opponent_time.text().split(':'))
-            total_seconds = minutes * 60 + seconds - 1
-            self.opponent_time.setText(f"{int(total_seconds/60):02d}:{int(total_seconds%60):02d}")
+        try:
+            if self.to_move == 'white' and self.current_color == 'white':
+                minutes, seconds = map(int, self.your_time.text().split(':'))
+                total_seconds = minutes * 60 + seconds - 1
+                self.your_time.setText(f"{int(total_seconds/60):02d}:{int(total_seconds%60):02d}")
+            else:
+                minutes, seconds = map(int, self.opponent_time.text().split(':'))
+                total_seconds = minutes * 60 + seconds - 1
+                self.opponent_time.setText(f"{int(total_seconds/60):02d}:{int(total_seconds%60):02d}")
+        except Exception as e:
+            logger.error(f"Error in update_time: {e}")
     
     def resign(self):
         """
