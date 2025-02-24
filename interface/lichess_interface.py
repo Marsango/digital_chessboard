@@ -1,4 +1,6 @@
 import sys
+import serial
+import threading
 import time
 import copy
 import json
@@ -250,6 +252,8 @@ class LichessInterface(QMainWindow):
         self.setMaximumWidth(460)
         self.setMaximumHeight(600)
         self.setWindowIcon(QPixmap('images/black-knight.png'))
+        self.game_active = False  # Flag para controle do jogo
+
         
         # Variáveis de controle
         self.current_token = None
@@ -325,6 +329,11 @@ class LichessInterface(QMainWindow):
         self.game_start_signal.connect(lambda: self.switch_layout(2))
         self.game_finish_signal.connect(self.your_time.hide)
         self.game_finish_signal.connect(self.opponent_time.hide)
+
+        # Inicialize a porta serial (ajuste o COM e baud rate conforme necessário)
+        self.serial_port = serial.Serial('COM9', 115200, timeout=1)
+        # Inicia uma thread para enviar atualizações do relógio
+        self.start_serial_thread()
     
     def create_connect_layout(self):
         """Cria o layout de conexão com o Lichess."""
@@ -352,7 +361,7 @@ class LichessInterface(QMainWindow):
         widget = QWidget()
         self.resign_button = QPushButton("Resign")
         self.opponent = QLabel("Unknown (00)")
-        self.last_move = QLabel("Last move: --")
+        self.last_move = QLabel("--")
         layout = QHBoxLayout(widget)
         layout.addWidget(self.resign_button)
         layout.addWidget(self.opponent)
@@ -367,7 +376,9 @@ class LichessInterface(QMainWindow):
     def initialize_board(self):
         """
         Cria o tabuleiro gráfico (8x8) com células representadas por QLabel.
+
         """
+        self.game_active = True
         self.cells = []  # Reinicia a lista de células
         for row in range(8):
             row_cells = []
@@ -444,7 +455,7 @@ class LichessInterface(QMainWindow):
                 self.opponent.setText(f"{game_info.get('opponent', {}).get('username', 'Unknown')}")
             self.current_game = game_info.get('gameId')
             self.current_color = game_info.get("color", "white")
-            self.last_move.setText('Last move: --')
+            self.last_move.setText('--')
             self.your_time.setText('--:--')
             self.opponent_time.setText('--:--')
             self.chess_board.reset_board()
@@ -459,6 +470,8 @@ class LichessInterface(QMainWindow):
             self.stop_timer_signal.emit()
             self.game_finish_signal.emit()
             self.switch_layout(1)
+            self.game_active = False  # Jogo finalizado, não atualizar mais os relógios
+
             game_data = event.get('game', {})
             status = game_data.get('status', {}).get('name', '')
             if status != 'aborted':
@@ -491,9 +504,9 @@ class LichessInterface(QMainWindow):
                 if moves_list:
                     last_move = moves_list[-1]
                     self.current_moves += 1
-                    self.chess_board.apply_move(last_move)
                     translated_move = self.chess_board.translate_move(last_move)
-                    self.last_move.setText(f"Last move: {translated_move}")
+                    self.chess_board.apply_move(last_move)
+                    self.last_move.setText(f"{translated_move}")
                     self.update_board()
                 white_time = event.get('wtime', 0) / 1000
                 black_time = event.get('btime', 0) / 1000
@@ -509,6 +522,7 @@ class LichessInterface(QMainWindow):
                     self.opponent_time.setText(f"{int(white_time/60):02d}:{int(white_time%60):02d}")
                 if len(moves_list) >= 2:
                     self.start_timer_signal.emit()
+                self.game_active = True  # Garante que o jogo está ativo
         except Exception as e:
             logger.error(f"Error in handle_game_events: {e}")
     
@@ -522,6 +536,8 @@ class LichessInterface(QMainWindow):
     
     def update_time(self):
         """Atualiza os relógios decrementando 1 segundo a cada tick do timer."""
+        if not self.game_active:
+            return
         try:
             if self.to_move == 'white' and self.current_color == 'white':
                 minutes, seconds = map(int, self.your_time.text().split(':'))
@@ -565,6 +581,29 @@ class LichessInterface(QMainWindow):
     def handle_error(self, error_message):
         """Trata erros emitidos pelas threads de streaming."""
         logger.error(f"Stream error: {error_message}")
+        
+    def start_serial_thread(self):
+        thread = threading.Thread(target=self.serial_update_loop, daemon=True)
+        thread.start()
+    
+    def serial_update_loop(self):
+        # Essa thread será executada em background, enviando os tempos a cada segundo
+        while True:
+            if self.game_active:
+            # Suponha que os relógios estejam armazenados como strings no formato "MM:SS"
+                white_time_str = self.your_time.text()   # Ex: "02:59"
+                black_time_str = self.opponent_time.text() # Ex: "02:59"
+                last_move_val = self.last_move.text().replace("x", "")
+                # Formate uma mensagem, por exemplo:
+                msg = f"{white_time_str};{last_move_val};{black_time_str}"
+            else:
+                result = self.result_label.text()  # Ex: "1-0", "0-1" ou "1/2-1/2"
+                msg = f".......{result}......."
+            try:
+                self.serial_port.write(msg.encode())
+            except Exception as e:
+                print("Erro enviando via serial:", e)
+            time.sleep(1)
 
 # =============================================================================
 # Execução principal
