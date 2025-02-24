@@ -254,6 +254,7 @@ class LichessInterface(QMainWindow):
     
     def __init__(self):
         super().__init__()
+        self.last_move_ucl = None
         self.setWindowTitle("Lichess Interface")
         self.setGeometry(100, 100, 460, 600)
         self.setMaximumWidth(460)
@@ -338,7 +339,6 @@ class LichessInterface(QMainWindow):
 
         # Inicialize a porta serial (ajuste o COM e baud rate conforme necessário)
         self.serial_port = serial.Serial(self.find_esp_port(), 115200, timeout=1)
-        self.start_serial_update_timer()
         # Inicia uma thread para enviar atualizações do relógio
 
     def find_esp_port(self):
@@ -458,6 +458,8 @@ class LichessInterface(QMainWindow):
         event_type = event.get('type')
         if event_type == 'gameStart':
             self.game_start_signal.emit()
+            self.start_serial_update_timer()
+            self.serial_port.write("reset".encode())
             self.current_moves = 0
             game_info = event.get('game', {})
             if game_info.get('source') != 'ai':
@@ -519,6 +521,7 @@ class LichessInterface(QMainWindow):
                     last_move = moves_list[-1]
                     self.current_moves += 1
                     translated_move = self.chess_board.translate_move(last_move)
+                    self.last_move_ucl = last_move
                     self.chess_board.apply_move(last_move)
                     self.last_move.setText(f"{translated_move}")
                     self.update_board()
@@ -601,29 +604,6 @@ class LichessInterface(QMainWindow):
     def handle_error(self, error_message):
         """Trata erros emitidos pelas threads de streaming."""
         logger.error(f"Stream error: {error_message}")
-        
-    def start_serial_thread(self):
-        thread = threading.Thread(target=self.serial_update, daemon=True)
-        thread.start()
-<<<<<<< Updated upstream
-    
-    def serial_update_loop(self):
-        # Essa thread é executada em background, enviando os tempos a cada segundo
-        while True:
-            if self.game_active:
-                white_time_str = self.your_time.text()   # Ex: "02:59"
-                black_time_str = self.opponent_time.text() # Ex: "02:59"
-                last_move_val = self.last_move.text().replace("x", "")
-                msg = f"{white_time_str};{last_move_val};{black_time_str}"
-            else:
-                result = self.result_label.text()  # Ex: "1-0", "0-1" ou "1/2-1/2"
-                msg = f".......{result}......."
-            try:
-                self.serial_port.write(msg.encode())
-            except Exception as e:
-                print("Erro enviando via serial:", e)
-            time.sleep(1)
-=======
 
     def start_serial_update_timer(self):
         self.serial_timer = QTimer(self)
@@ -635,7 +615,7 @@ class LichessInterface(QMainWindow):
             white_time_str = self.your_time.text()
             black_time_str = self.opponent_time.text()
             last_move_val = self.last_move.text().replace("x", "")
-            msg = f"{white_time_str};{last_move_val};{black_time_str}"
+            msg = f"{white_time_str};{last_move_val};{black_time_str};{self.last_move_ucl}"
         else:
             result = self.result_label.text()
             msg = f".......{result}......."
@@ -658,7 +638,6 @@ class LichessInterface(QMainWindow):
         response = requests.post(url, headers={"Authorization": f"Bearer {self.current_token}"})
         print(response.text)
 
->>>>>>> Stashed changes
 
 # =============================================================================
 # Execução principal
