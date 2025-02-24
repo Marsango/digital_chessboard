@@ -12,62 +12,388 @@
 #include "esp_log.h"
 #include "driver/uart.h"
 #include "string.h"
+#include "stdio.h"
+#include "stdlib.h"
 #include "driver/gpio.h"
+#include "freertos/queue.h"
+#include <inttypes.h>
+#include <string.h>
+#include <math.h>
 
-static const int RX_BUF_SIZE = 1024;
+#define BOARD_SIZE 8
+#define entrada  ((1ULL << 14) | (1ULL << 25) | (1ULL << 26) | (1ULL << 27) | (1ULL << 32) | (1ULL << 33) | (1ULL << 34) | (1ULL << 35))
+#define saidas  ((1ULL << 15) | (1ULL << 2) | (1ULL << 4) | (1ULL << 16) | (1ULL << 17) | (1ULL << 5) | (1ULL << 18) | (1ULL << 19) | (1ULL << 12) | (1ULL << 13))
 
-#define TXD_PIN (GPIO_NUM_4)
-#define RXD_PIN (GPIO_NUM_5)
-#define EN_PIN (GPIO_NUM_19)
-#define MUX_ON_PIN GPIO_NUM_32
 
-void init(void)
+static QueueHandle_t evento_gpio = NULL;
+          //  criando a fila para receber os parametros da interrupção
+
+static void IRAM_ATTR bts(void* args)
 {
-    const uart_config_t uart_config = {
-        .baud_rate = 9600,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .source_clk = UART_SCLK_DEFAULT,
-    };
-    // We won't use a buffer for sending data.
-    uart_driver_install(UART_NUM_1, RX_BUF_SIZE * 2, 0, 0, NULL, 0);
-    uart_param_config(UART_NUM_1, &uart_config);
-    uart_set_pin(UART_NUM_1, TXD_PIN, RXD_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+     uint32_t  num_pin = (uint32_t) args;
+   xQueueSendFromISR(evento_gpio, &num_pin, NULL);
+
+// atenção !!!!  Não processar nada dentro desta função de interrupção
 }
 
-static void rx_task(void *arg)
+//--------------------------------------------------------------------------------------------
+static void taskprocesso(void* args)
 {
-    static const char *RX_TASK_TAG = "RX_TASK";
-    esp_log_level_set(RX_TASK_TAG, ESP_LOG_INFO);
-    uint8_t* data = (uint8_t*) malloc(RX_BUF_SIZE + 1);
-    while (1) {
-        const int rxBytes = uart_read_bytes(UART_NUM_1, data, 14, 1000 / portTICK_PERIOD_MS);
-        if (rxBytes > 0) {
-            data[rxBytes] = 0;
-            ESP_LOGI(RX_TASK_TAG, "Read %d bytes: '%s'", rxBytes, data);
-            ESP_LOG_BUFFER_HEXDUMP(RX_TASK_TAG, data, rxBytes, ESP_LOG_INFO);
-        }
+               uint32_t   num_pin  =  (uint32_t) args;
+               //static bool  set_bt = 0;
+               for(;;)
+               {
+                         if(xQueueReceive(evento_gpio,  &num_pin,  portMAX_DELAY))
+                        {         
+                               printf("botao apertado: %" PRIu32 "\n", num_pin);
+
+                         }//if
+
+               } //for(;;)
+
+}   // void taskprocesso(void* args)
+
+void setup_interrupt(void){
+    gpio_config_t conf_gpio={};  
+    conf_gpio.intr_type = GPIO_INTR_DISABLE;           
+    conf_gpio.mode = GPIO_MODE_OUTPUT;        
+    conf_gpio.pin_bit_mask = saidas;
+    conf_gpio.pull_down_en = 1;
+    conf_gpio.pull_up_en = 0;                                           
+    gpio_config(&conf_gpio);                             
+    conf_gpio.intr_type = GPIO_INTR_DISABLE; 
+    conf_gpio.mode = GPIO_MODE_INPUT;    
+    conf_gpio.pin_bit_mask = entrada;
+    conf_gpio.pull_down_en = 1;
+    conf_gpio.pull_up_en = 0;                                           
+    gpio_config(&conf_gpio);
+    // gpio_set_intr_type(GPIO_NUM_25, GPIO_INTR_NEGEDGE);
+    // gpio_install_isr_service(0);                      // Se houver interrupção em mais de um pino, basta instalar o serviço uma vez
+    // gpio_isr_handler_add(GPIO_NUM_25, bts, (void*) GPIO_NUM_25);
+    // evento_gpio = xQueueCreate(10, sizeof(uint32_t));     // a fila criada possui 10 posições
+    // xTaskCreate(taskprocesso, "task processo botoes", 2048, NULL, 3, NULL);    
+}
+
+#include <stdio.h>
+
+void print_board(int board[8][8]) {
+    char columns_names[] = {'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'};
+
+    printf("  ");
+    for (int i = 0; i < 8; i++) {
+        printf(" %c ", columns_names[i]);
     }
-    free(data);
+    printf("\n");
+
+    for (int j = 0; j < 8; j++) {
+        printf("%d ", j + 1);
+        for (int i = 0; i < 8; i++) {
+            printf(" %d ", board[j][i]);
+        }
+        printf("\n");
+    }
+
+    printf("  ");
+    for (int i = 0; i < 8; i++) {
+        printf(" %c ", columns_names[i]);
+    }
+    printf("\n");
+}
+
+void clean_change_list(char list[], int size) {
+    memset(list, '\0', size);
+}
+
+
+int path_clear(int current_board[BOARD_SIZE][BOARD_SIZE], int src_row, int src_col, int dst_row, int dst_col) {
+    int dr = dst_row - src_row;
+    int dc = dst_col - src_col;
+    int step_r = (dr == 0) ? 0 : (dr > 0 ? 1 : -1);
+    int step_c = (dc == 0) ? 0 : (dc > 0 ? 1 : -1);
+    
+    int r = src_row + step_r;
+    int c = src_col + step_c;
+    while (r != dst_row || c != dst_col) {
+        if (current_board[r][c] != 0)
+            return 0;
+        r += step_r;
+        c += step_c;
+    }
+    return 1;
+}
+
+int is_valid_move(char piece, int src_row, int src_col, int dst_row, int dst_col,
+                  int current_board[BOARD_SIZE][BOARD_SIZE], char last_valid_board[BOARD_SIZE][BOARD_SIZE]) {
+    int dr = dst_row - src_row;
+    int dc = dst_col - src_col;
+    int abs_dr = abs(dr);
+    int abs_dc = abs(dc);
+    int isWhite = (piece >= 'A' && piece <= 'Z');
+    
+    if (piece == 'p' || piece == 'P') {
+        if (piece == 'p') {
+            if (dr == 1 && dc == 0)
+                return 1;
+            if (dr == 1 && abs_dc == 1) {
+                char target = last_valid_board[dst_row][dst_col];
+                if (target != '.' && target >= 'A' && target <= 'Z')
+                    return 1;
+            }
+        } else {
+            if (dr == -1 && dc == 0)
+                return 1;
+            if (dr == -1 && abs_dc == 1) {
+                char target = last_valid_board[dst_row][dst_col];
+                if (target != '.' && target >= 'a' && target <= 'z')
+                    return 1;
+            }
+        }
+        return 0;
+    }
+    if (piece == 'r' || piece == 'R') {
+        if (dr == 0 || dc == 0) {
+            if (path_clear(current_board, src_row, src_col, dst_row, dst_col))
+                return 1;
+        }
+        return 0;
+    }
+    
+    if (piece == 'n' || piece == 'N') {
+        if ((abs_dr == 2 && abs_dc == 1) || (abs_dr == 1 && abs_dc == 2))
+            return 1;
+        return 0;
+    }
+    
+    if (piece == 'b' || piece == 'B') {
+        if (abs_dr == abs_dc) {
+            if (path_clear(current_board, src_row, src_col, dst_row, dst_col))
+                return 1;
+        }
+        return 0;
+    }
+    
+    if (piece == 'q' || piece == 'Q') {
+        if ((dr == 0 || dc == 0) || (abs_dr == abs_dc)) {
+            if (path_clear(current_board, src_row, src_col, dst_row, dst_col))
+                return 1;
+        }
+        return 0;
+    }
+    
+    if (piece == 'k' || piece == 'K') {
+        if (abs_dr <= 1 && abs_dc <= 1)
+            return 1;
+        return 0;
+    }
+    
+    return 0;
+}
+
+int verify_valid_board(int current_board[8][8], char last_valid_board[8][8], int num_adds, int number_of_removes, char addList[], char removeList[]){
+    // first element equals line, second equals column
+    if (number_of_removes != num_adds){
+        return 0;
+    }
+    if (num_adds > 2){
+        return 0;
+    }
+    if (num_adds == 0){
+        return 1;
+    }
+    if (num_adds == 1){
+        int src_row = removeList[0] - '0';
+        int src_col = removeList[1] - '0';
+        int dst_row = addList[0] - '0';
+        int dst_col = addList[1] - '0';
+        char piece = last_valid_board[src_row][src_col];
+        if (current_board[src_row][src_col] != 0 || current_board[dst_row][dst_col] != 1)
+        return 0;
+    
+        if (piece == '.')
+            return 0;
+    
+        if (!is_valid_move(piece, src_row, src_col, dst_row, dst_col, current_board, last_valid_board))
+            return 0;
+        return 1;
+    }
+    if (num_adds == 2) {
+        int rem1_row = removeList[0] - '0';
+        int rem1_col = removeList[1] - '0';
+        int rem2_row = removeList[2] - '0';
+        int rem2_col = removeList[3] - '0';
+
+        int add1_row = addList[0] - '0';
+        int add1_col = addList[1] - '0';
+        int add2_row = addList[2] - '0';
+        int add2_col = addList[3] - '0';
+
+        if (current_board[rem1_row][rem1_col] != 0 ||
+            current_board[rem2_row][rem2_col] != 0 ||
+            current_board[add1_row][add1_col] != 1 ||
+            current_board[add2_row][add2_col] != 1)
+            return 0;
+
+        int king_rem_index = 0, rook_rem_index = 0;
+        int isRem1King = (last_valid_board[rem1_row][rem1_col] == 'K' ||
+                          last_valid_board[rem1_row][rem1_col] == 'k');
+        int isRem2King = (last_valid_board[rem2_row][rem2_col] == 'K' ||
+                          last_valid_board[rem2_row][rem2_col] == 'k');
+
+        int isRem1Rook = (last_valid_board[rem1_row][rem1_col] == 'R' ||
+                          last_valid_board[rem1_row][rem1_col] == 'r');
+        int isRem2Rook = (last_valid_board[rem2_row][rem2_col] == 'R' ||
+                          last_valid_board[rem2_row][rem2_col] == 'r');
+
+        if (isRem1King && isRem2Rook) {
+            king_rem_index = 1;
+            rook_rem_index = 2;
+        } else if (isRem2King && isRem1Rook) {
+            king_rem_index = 2;
+            rook_rem_index = 1;
+        } else {
+            return 0;
+        }
+
+        int validMapping = 0;
+        for (int mapping = 0; mapping < 2; mapping++) {
+            int king_src_row, king_src_col, king_dst_row, king_dst_col;
+            int rook_src_row, rook_src_col, rook_dst_row, rook_dst_col;
+            if (king_rem_index == 1) {
+                king_src_row = rem1_row; king_src_col = rem1_col;
+                rook_src_row = rem2_row; rook_src_col = rem2_col;
+            } else {
+                king_src_row = rem2_row; king_src_col = rem2_col;
+                rook_src_row = rem1_row; rook_src_col = rem1_col;
+            }
+            if (mapping == 0) {
+                king_dst_row = add1_row; king_dst_col = add1_col;
+                rook_dst_row = add2_row; rook_dst_col = add2_col;
+            } else {
+                king_dst_row = add2_row; king_dst_col = add2_col;
+                rook_dst_row = add1_row; rook_dst_col = add1_col;
+            }
+            if (king_src_row != king_dst_row)
+                continue;
+            if (abs(king_dst_col - king_src_col) != 2)
+                continue;
+            int expected_rook_dst_col;
+            if (king_dst_col > king_src_col)
+                expected_rook_dst_col = king_dst_col - 1;
+            else
+                expected_rook_dst_col = king_dst_col + 1;
+            if (rook_src_row != king_src_row)
+                continue;
+            if (rook_dst_row != king_src_row)
+                continue;
+            if (rook_dst_col != expected_rook_dst_col)
+                continue;
+            validMapping = 1;
+            break;
+        }
+
+        if (!validMapping)
+            return 0;
+        return 1;
+    }
+    return 0;
 }
 
 void app_main(void)
 {
-    init();
-    gpio_set_direction(MUX_ON_PIN, GPIO_MODE_OUTPUT);
-    gpio_set_level(MUX_ON_PIN, 1);
-    xTaskCreate(rx_task, "uart_rx_task", 1024 * 2, NULL, configMAX_PRIORITIES - 1, NULL);
-    int state = 0;
+    char last_valid_board[8][8];
+    char whitePieces[] = {'R', 'N', 'B', 'Q', 'K', 'B', 'N', 'R'};
+    char blackPieces[] = {'r', 'n', 'b', 'q', 'k', 'b', 'n', 'r'};
+
+    for (int i = 0; i < 8; i++) {
+        for (int j = 0; j < 8; j++) {
+            if (i == 0) { 
+                last_valid_board[i][j] = whitePieces[j];
+            } else if (i == 1) { 
+                last_valid_board[i][j] = 'P';
+            } else if (i == 6) { 
+                last_valid_board[i][j] = 'p';
+            } else if (i == 7) { 
+                last_valid_board[i][j] = blackPieces[j];
+            } else {
+                last_valid_board[i][j] = '.';
+            }
+        }
+    }
+    int current_board[8][8] = {
+        {1, 1, 1, 1, 1, 1, 1, 1},
+        {1, 1, 1, 1, 1, 1, 1, 1},
+        {0, 0, 0, 0, 0, 0, 0, 0},
+        {0, 0, 0, 0, 0, 0, 0, 0},
+        {0, 0, 0, 0, 0, 0, 0, 0},
+        {0, 0, 0, 0, 0, 0, 0, 0}, 
+        {1, 1, 1, 1, 1, 1, 1, 1}, 
+        {1, 1, 1, 1, 1, 1, 1, 1}
+    };
+    current_board[6][0] = 0;
+    last_valid_board[6][0] = '.';
+    setup_interrupt();
+    int i = 0;
+    int j = 0;
+    gpio_num_t columns[] = {GPIO_NUM_15, GPIO_NUM_2, GPIO_NUM_4, GPIO_NUM_16, GPIO_NUM_17, GPIO_NUM_5, GPIO_NUM_18, GPIO_NUM_19};
+    gpio_num_t rows[] = {GPIO_NUM_14, GPIO_NUM_27, GPIO_NUM_26, GPIO_NUM_25, GPIO_NUM_33, GPIO_NUM_32, GPIO_NUM_34, GPIO_NUM_35};
+    char columns_names[] = {'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'};
+    char addList[256];
+    char removeList[256];
+    int number_of_adds;
+    int number_of_removes;
+    char aux[3];
     while(1){
-        gpio_set_level(EN_PIN, state);
-        if (state == 0){
-            state = 1;
+        clean_change_list(addList, 256);
+        clean_change_list(removeList, 256);
+        clean_change_list(aux, 3);
+        int has_changed = 0;
+        number_of_adds = 0;
+        number_of_removes = 0;
+        for(i = 0; i < 8; i++){
+            gpio_set_level(columns[i], 1);
+            for (j = 0; j < 8; j++){
+                int leitura_estavel = gpio_get_level(rows[j]);
+                vTaskDelay(5 / portTICK_PERIOD_MS);
+                if (leitura_estavel == gpio_get_level(rows[j])) {
+                    if (leitura_estavel == 1 && current_board[j][i] == 0) {
+                        printf("Peça em %c%d\n", columns_names[i], j + 1);
+                        current_board[j][i] = 1;
+                        has_changed = 1;
+                    }
+                    else if (leitura_estavel == 0 && current_board[j][i] == 1) {
+                        printf("Levantou em %c%d\n", columns_names[i], j + 1);
+                        current_board[j][i] = 0;
+                        has_changed = 1;
+                    }
+                    if (current_board[j][i] == 0 && last_valid_board[j][i] != '.'){
+                        sprintf(aux, "%i%i", j, i); 
+                        removeList[number_of_removes*2] = aux[0];
+                        removeList[number_of_removes*2 + 1] = aux[1];
+                        number_of_removes++;
+                    }
+                    else if (current_board[j][i] == 1 && last_valid_board[j][i] == '.'){
+                        sprintf(aux, "%i%i", j, i); 
+                        addList[number_of_adds*2] = aux[0];
+                        addList[number_of_adds*2 + 1] = aux[1];
+                        number_of_adds++;
+                    }
+                }
+            }
+            gpio_set_level(columns[i], 0);
         }
-        else{
-            state = 0;
+        if (number_of_adds + number_of_removes && has_changed){
+            int valid = verify_valid_board(current_board, last_valid_board, number_of_adds, number_of_removes, addList, removeList);
+            if (valid){
+                gpio_set_level(GPIO_NUM_12, 0);
+                gpio_set_level(GPIO_NUM_13, 1);
+            }
+            else{
+                gpio_set_level(GPIO_NUM_12, 1);
+                gpio_set_level(GPIO_NUM_13, 0);
+            }
+            printf("Válido: %i | Adds: %i | Removes: %i\nRemove List: %s\nAdd List: %s\n", valid, number_of_adds, number_of_removes, removeList, addList);            
+            print_board(current_board);
         }
-        vTaskDelay(1000/portTICK_PERIOD_MS);
+        vTaskDelay(10/portTICK_PERIOD_MS);
     }
 }
