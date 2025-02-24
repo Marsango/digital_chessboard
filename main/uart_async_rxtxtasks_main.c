@@ -19,39 +19,19 @@
 #include <inttypes.h>
 #include <string.h>
 #include <math.h>
-
+#define BUTTON_PIN GPIO_NUM_23
+volatile bool buttonPressed = false;
+bool move_valid = false;              
+char last_move[10];         
 #define BOARD_SIZE 8
 #define entrada  ((1ULL << 14) | (1ULL << 25) | (1ULL << 26) | (1ULL << 27) | (1ULL << 32) | (1ULL << 33) | (1ULL << 34) | (1ULL << 35))
 #define saidas  ((1ULL << 15) | (1ULL << 2) | (1ULL << 4) | (1ULL << 16) | (1ULL << 17) | (1ULL << 5) | (1ULL << 18) | (1ULL << 19) | (1ULL << 12) | (1ULL << 13))
 
 
-static QueueHandle_t evento_gpio = NULL;
-          //  criando a fila para receber os parametros da interrupção
-
-static void IRAM_ATTR bts(void* args)
-{
-     uint32_t  num_pin = (uint32_t) args;
-   xQueueSendFromISR(evento_gpio, &num_pin, NULL);
-
-// atenção !!!!  Não processar nada dentro desta função de interrupção
+void IRAM_ATTR buttonISR(void* arg) {
+    buttonPressed = true;
 }
 
-//--------------------------------------------------------------------------------------------
-static void taskprocesso(void* args)
-{
-               uint32_t   num_pin  =  (uint32_t) args;
-               //static bool  set_bt = 0;
-               for(;;)
-               {
-                         if(xQueueReceive(evento_gpio,  &num_pin,  portMAX_DELAY))
-                        {         
-                               printf("botao apertado: %" PRIu32 "\n", num_pin);
-
-                         }//if
-
-               } //for(;;)
-
-}   // void taskprocesso(void* args)
 
 void setup_interrupt(void){
     gpio_config_t conf_gpio={};  
@@ -67,14 +47,17 @@ void setup_interrupt(void){
     conf_gpio.pull_down_en = 1;
     conf_gpio.pull_up_en = 0;                                           
     gpio_config(&conf_gpio);
-    // gpio_set_intr_type(GPIO_NUM_25, GPIO_INTR_NEGEDGE);
-    // gpio_install_isr_service(0);                      // Se houver interrupção em mais de um pino, basta instalar o serviço uma vez
-    // gpio_isr_handler_add(GPIO_NUM_25, bts, (void*) GPIO_NUM_25);
-    // evento_gpio = xQueueCreate(10, sizeof(uint32_t));     // a fila criada possui 10 posições
-    // xTaskCreate(taskprocesso, "task processo botoes", 2048, NULL, 3, NULL);    
+    gpio_config_t io_conf = {};
+    io_conf.intr_type = GPIO_INTR_POSEDGE;   // Interrupção na borda de subida (quando o pino vai de 0 para 1)
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pin_bit_mask = (1ULL << BUTTON_PIN);
+    io_conf.pull_down_en = 1;
+    io_conf.pull_up_en = 0;
+    gpio_config(&io_conf);
+    gpio_install_isr_service(0);
+    gpio_isr_handler_add(BUTTON_PIN, buttonISR, NULL);
 }
 
-#include <stdio.h>
 
 void print_board(int board[8][8]) {
     char columns_names[] = {'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'};
@@ -130,24 +113,38 @@ int is_valid_move(char piece, int src_row, int src_col, int dst_row, int dst_col
     int abs_dc = abs(dc);
     int isWhite = (piece >= 'A' && piece <= 'Z');
     
+    
     if (piece == 'p' || piece == 'P') {
         if (piece == 'p') {
-            if (dr == 1 && dc == 0)
+            // Peão PRETO: move para CIMA (linha diminui)
+            if ((dr == -1 && dc == 0 && last_valid_board[dst_row][dst_col] == '.') || 
+                (dr == -2 && src_row == 6 && dc == 0 && 
+                 last_valid_board[dst_row][dst_col] == '.')){
                 return 1;
-            if (dr == 1 && abs_dc == 1) {
-                char target = last_valid_board[dst_row][dst_col];
-                if (target != '.' && target >= 'A' && target <= 'Z')
-                    return 1;
             }
-        } else {
-            if (dr == -1 && dc == 0)
-                return 1;
+            // Captura para peão preto (diagonal para CIMA)
             if (dr == -1 && abs_dc == 1) {
                 char target = last_valid_board[dst_row][dst_col];
-                if (target != '.' && target >= 'a' && target <= 'z')
+                if (target != '.' && target >= 'A' && target <= 'Z') {
                     return 1;
+                }
+            }
+        } else { // Peão BRANCO ('P')
+            // Peão BRANCO: move para BAIXO (linha aumenta)
+            if ((dr == 1 && dc == 0 && last_valid_board[dst_row][dst_col] == '.') || 
+                (dr == 2 && src_row == 1 && dc == 0 && 
+                    last_valid_board[dst_row][dst_col] == '.')) {
+                return 1;
+            }
+            // Captura para peão branco (diagonal para BAIXO)
+            if (dr == 1 && abs_dc == 1) {
+                char target = last_valid_board[dst_row][dst_col];
+                if (target != '.' && target >= 'a' && target <= 'z') {
+                    return 1;
+                }
             }
         }
+        printf("dr == %i && dc == %i && current_board[%i][%i] == %i || dr == %i && src_row == %i && dc == %i && current_board[%i][%i] == %i && current_board[%i + 1][%i] == %i", dr, dc, dst_row, dst_col, current_board[dst_row][dst_col], dr, src_row, dc, dst_row, dst_col, current_board[dst_row][dst_col], src_row, src_col, current_board[src_row + 1][src_col]);
         return 0;
     }
     if (piece == 'r' || piece == 'R') {
@@ -191,6 +188,7 @@ int is_valid_move(char piece, int src_row, int src_col, int dst_row, int dst_col
 
 int verify_valid_board(int current_board[8][8], char last_valid_board[8][8], int num_adds, int number_of_removes, char addList[], char removeList[]){
     // first element equals line, second equals column
+    char columns_names[] = {'a','b','c','d','e','f','g','h'};
     if (number_of_removes != num_adds){
         return 0;
     }
@@ -214,6 +212,21 @@ int verify_valid_board(int current_board[8][8], char last_valid_board[8][8], int
     
         if (!is_valid_move(piece, src_row, src_col, dst_row, dst_col, current_board, last_valid_board))
             return 0;
+        if ((piece == 'p') && src_row == 6 && dst_row == 7){
+            sprintf(last_move, "%c%d%c%d", 
+                columns_names[src_col], src_row + 1, 
+                columns_names[dst_col], dst_row + 1);
+        }
+        else if ((piece == 'P') && src_row == 1 && dst_row == 0){
+            sprintf(last_move, "%c%d%c%d", 
+                columns_names[src_col], src_row + 1, 
+                columns_names[dst_col], dst_row + 1);
+        }
+        else{
+        sprintf(last_move, "%c%d%c%d", 
+                columns_names[src_col], src_row + 1, 
+                columns_names[dst_col], dst_row + 1);
+        }
         return 1;
     }
     if (num_adds == 2) {
@@ -254,46 +267,55 @@ int verify_valid_board(int current_board[8][8], char last_valid_board[8][8], int
             return 0;
         }
 
+        int king_src_row = 0, king_src_col = 0, king_dst_row = 0, king_dst_col = 0;
         int validMapping = 0;
         for (int mapping = 0; mapping < 2; mapping++) {
-            int king_src_row, king_src_col, king_dst_row, king_dst_col;
+            int temp_king_src_row, temp_king_src_col, temp_king_dst_row, temp_king_dst_col;
             int rook_src_row, rook_src_col, rook_dst_row, rook_dst_col;
             if (king_rem_index == 1) {
-                king_src_row = rem1_row; king_src_col = rem1_col;
+                temp_king_src_row = rem1_row; temp_king_src_col = rem1_col;
                 rook_src_row = rem2_row; rook_src_col = rem2_col;
             } else {
-                king_src_row = rem2_row; king_src_col = rem2_col;
+                temp_king_src_row = rem2_row; temp_king_src_col = rem2_col;
                 rook_src_row = rem1_row; rook_src_col = rem1_col;
             }
             if (mapping == 0) {
-                king_dst_row = add1_row; king_dst_col = add1_col;
+                temp_king_dst_row = add1_row; temp_king_dst_col = add1_col;
                 rook_dst_row = add2_row; rook_dst_col = add2_col;
             } else {
-                king_dst_row = add2_row; king_dst_col = add2_col;
+                temp_king_dst_row = add2_row; temp_king_dst_col = add2_col;
                 rook_dst_row = add1_row; rook_dst_col = add1_col;
             }
-            if (king_src_row != king_dst_row)
+            if (temp_king_src_row != temp_king_dst_row)
                 continue;
-            if (abs(king_dst_col - king_src_col) != 2)
+            if (abs(temp_king_dst_col - temp_king_src_col) != 2)
                 continue;
             int expected_rook_dst_col;
-            if (king_dst_col > king_src_col)
-                expected_rook_dst_col = king_dst_col - 1;
+            if (temp_king_dst_col > temp_king_src_col)
+                expected_rook_dst_col = temp_king_dst_col - 1;
             else
-                expected_rook_dst_col = king_dst_col + 1;
-            if (rook_src_row != king_src_row)
+                expected_rook_dst_col = temp_king_dst_col + 1;
+            if (rook_src_row != temp_king_src_row)
                 continue;
-            if (rook_dst_row != king_src_row)
+            if (rook_dst_row != temp_king_src_row)
                 continue;
             if (rook_dst_col != expected_rook_dst_col)
                 continue;
+            king_src_row = temp_king_src_row;
+            king_src_col = temp_king_src_col;
+            king_dst_row = temp_king_dst_row;
+            king_dst_col = temp_king_dst_col;
             validMapping = 1;
             break;
         }
-
+        
         if (!validMapping)
             return 0;
+        sprintf(last_move, "%c%d%c%d", 
+            columns_names[king_src_col], king_src_row + 1, 
+            columns_names[king_dst_col], king_dst_row + 1);
         return 1;
+        
     }
     return 0;
 }
@@ -329,13 +351,13 @@ void app_main(void)
         {1, 1, 1, 1, 1, 1, 1, 1}, 
         {1, 1, 1, 1, 1, 1, 1, 1}
     };
-    current_board[6][0] = 0;
-    last_valid_board[6][0] = '.';
+    current_board[7][0] = 0;
+    last_valid_board[7][0] = '.';
     setup_interrupt();
     int i = 0;
     int j = 0;
     gpio_num_t columns[] = {GPIO_NUM_15, GPIO_NUM_2, GPIO_NUM_4, GPIO_NUM_16, GPIO_NUM_17, GPIO_NUM_5, GPIO_NUM_18, GPIO_NUM_19};
-    gpio_num_t rows[] = {GPIO_NUM_14, GPIO_NUM_27, GPIO_NUM_26, GPIO_NUM_25, GPIO_NUM_33, GPIO_NUM_32, GPIO_NUM_34, GPIO_NUM_35};
+    gpio_num_t rows[] = {GPIO_NUM_14, GPIO_NUM_27, GPIO_NUM_26, GPIO_NUM_25, GPIO_NUM_33, GPIO_NUM_32, GPIO_NUM_35, GPIO_NUM_34};
     char columns_names[] = {'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'};
     char addList[256];
     char removeList[256];
@@ -353,7 +375,7 @@ void app_main(void)
             gpio_set_level(columns[i], 1);
             for (j = 0; j < 8; j++){
                 int leitura_estavel = gpio_get_level(rows[j]);
-                vTaskDelay(5 / portTICK_PERIOD_MS);
+                vTaskDelay(10 / portTICK_PERIOD_MS);
                 if (leitura_estavel == gpio_get_level(rows[j])) {
                     if (leitura_estavel == 1 && current_board[j][i] == 0) {
                         printf("Peça em %c%d\n", columns_names[i], j + 1);
@@ -386,13 +408,30 @@ void app_main(void)
             if (valid){
                 gpio_set_level(GPIO_NUM_12, 0);
                 gpio_set_level(GPIO_NUM_13, 1);
+                move_valid = true;
             }
             else{
                 gpio_set_level(GPIO_NUM_12, 1);
                 gpio_set_level(GPIO_NUM_13, 0);
+                move_valid = false;
             }
             printf("Válido: %i | Adds: %i | Removes: %i\nRemove List: %s\nAdd List: %s\n", valid, number_of_adds, number_of_removes, removeList, addList);            
             print_board(current_board);
+        }
+        if (buttonPressed) {
+            buttonPressed = false;
+            if (move_valid) {
+                printf("move: %s\n", last_move);
+                int src_letter = last_move[0] - 'a';        // 'a' -> 0, 'b' -> 1, etc.
+                int src_digit  = (last_move[1] - '0') - 1;    // '3' -> 3 - 1 = 2
+                int dst_letter = last_move[2] - 'a';
+                int dst_digit  = (last_move[3] - '0') - 1;            
+                last_valid_board[dst_digit][dst_letter] = last_valid_board[src_digit][src_letter];
+                last_valid_board[src_digit][src_letter] = '.';
+                gpio_set_level(GPIO_NUM_12, 1);
+                gpio_set_level(GPIO_NUM_13, 0);
+                move_valid = false; 
+            }
         }
         vTaskDelay(10/portTICK_PERIOD_MS);
     }

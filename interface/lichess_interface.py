@@ -6,7 +6,7 @@ import copy
 import json
 import logging
 import requests
-
+import serial.tools.list_ports
 from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QPushButton, QLabel,
                                QWidget, QGridLayout, QStackedLayout, QHBoxLayout, QFrame)
 from PySide6.QtCore import Qt, QTimer, QThread, Signal
@@ -22,18 +22,18 @@ logger = logging.getLogger(__name__)
 
 # Mapeamento das peças para os caminhos das imagens
 PIECES = {
-    'P': 'interface/images/white-pawn.png',
-    'p': 'interface/images/black-pawn.png',
-    'R': 'interface/images/white-rook.png',
-    'r': 'interface/images/black-rook.png',
-    'N': 'interface/images/white-knight.png',
-    'n': 'interface/images/black-knight.png',
-    'B': 'interface/images/white-bishop.png',
-    'b': 'interface/images/black-bishop.png',
-    'Q': 'interface/images/white-queen.png',
-    'q': 'interface/images/black-queen.png',
-    'K': 'interface/images/white-king.png',
-    'k': 'interface/images/black-king.png',
+    'P': 'images/white-pawn.png',
+    'p': 'images/black-pawn.png',
+    'R': 'images/white-rook.png',
+    'r': 'images/black-rook.png',
+    'N': 'images/white-knight.png',
+    'n': 'images/black-knight.png',
+    'B': 'images/white-bishop.png',
+    'b': 'images/black-bishop.png',
+    'Q': 'images/white-queen.png',
+    'q': 'images/black-queen.png',
+    'K': 'images/white-king.png',
+    'k': 'images/black-king.png',
 }
 
 # Configuração inicial do tabuleiro (FEN simplificado)
@@ -337,10 +337,17 @@ class LichessInterface(QMainWindow):
         self.game_finish_signal.connect(self.opponent_time.hide)
 
         # Inicialize a porta serial (ajuste o COM e baud rate conforme necessário)
-        self.serial_port = serial.Serial('COM9', 115200, timeout=1)
+        self.serial_port = serial.Serial(self.find_esp_port(), 115200, timeout=1)
+        self.start_serial_update_timer()
         # Inicia uma thread para enviar atualizações do relógio
-        self.start_serial_thread()
-    
+
+    def find_esp_port(self):
+        portas = serial.tools.list_ports.comports()
+        for porta in portas:
+            if "USB" in porta.description or "UART" in porta.description or "CP210" in porta.description:
+                return porta.device
+        return None
+
     def create_connect_layout(self):
         """Cria o layout de conexão com o Lichess."""
         widget = QWidget()
@@ -596,8 +603,9 @@ class LichessInterface(QMainWindow):
         logger.error(f"Stream error: {error_message}")
         
     def start_serial_thread(self):
-        thread = threading.Thread(target=self.serial_update_loop, daemon=True)
+        thread = threading.Thread(target=self.serial_update, daemon=True)
         thread.start()
+<<<<<<< Updated upstream
     
     def serial_update_loop(self):
         # Essa thread é executada em background, enviando os tempos a cada segundo
@@ -615,6 +623,42 @@ class LichessInterface(QMainWindow):
             except Exception as e:
                 print("Erro enviando via serial:", e)
             time.sleep(1)
+=======
+
+    def start_serial_update_timer(self):
+        self.serial_timer = QTimer(self)
+        self.serial_timer.timeout.connect(self.serial_update)
+        self.serial_timer.start(1000)
+
+    def serial_update(self):
+        if self.game_active:
+            white_time_str = self.your_time.text()
+            black_time_str = self.opponent_time.text()
+            last_move_val = self.last_move.text().replace("x", "")
+            msg = f"{white_time_str};{last_move_val};{black_time_str}"
+        else:
+            result = self.result_label.text()
+            msg = f".......{result}......."
+            self.serial_timer.stop()
+        try:
+            self.serial_port.write(msg.encode())
+        except Exception as e:
+            print("Erro enviando via serial:", e)
+        try:
+            move = self.serial_port.read_all().decode('utf-8').strip()
+            print(move)
+            if "move:" in move:
+                self.handle_special_interrupt(move)
+        except Exception as e:
+            print("Erro ao ler mensagem serial:", e)
+
+    def handle_special_interrupt(self, move):
+        url = f"https://lichess.org/api/board/game/{self.current_game}/move/{move.replace('move:', '').strip()}"
+        print(url)
+        response = requests.post(url, headers={"Authorization": f"Bearer {self.current_token}"})
+        print(response.text)
+
+>>>>>>> Stashed changes
 
 # =============================================================================
 # Execução principal
