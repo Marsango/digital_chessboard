@@ -101,8 +101,15 @@ class ChessBoard:
             start_col = self.letter_position(start[0])
             end_row = 8 - int(end[1])
             end_col = self.letter_position(end[0])
+            # Captura o peão que está se movendo para determinar sua cor
+            pawn = self.state[start_row][start_col]
             self.state[start_row][start_col] = '.'
-            promoted_piece = move[4]
+            if pawn.isupper():
+                # Peão branco: converte para maiúscula
+                promoted_piece = move[4].upper()
+            else:
+                # Peão preto: mantém minúsculo
+                promoted_piece = move[4].lower()
             self.state[end_row][end_col] = promoted_piece
         else:
             # Movimento normal
@@ -241,7 +248,7 @@ class LichessInterface(QMainWindow):
     Interface gráfica para interagir com a API do Lichess.
     """
     start_timer_signal = Signal()
-    stop_timer_signal = Signal()  # Novo sinal para parar o timer na thread principal
+    stop_timer_signal = Signal()  # Sinal para parar o timer
     game_start_signal = Signal()
     game_finish_signal = Signal()
     
@@ -254,7 +261,6 @@ class LichessInterface(QMainWindow):
         self.setWindowIcon(QPixmap('images/black-knight.png'))
         self.game_active = False  # Flag para controle do jogo
 
-        
         # Variáveis de controle
         self.current_token = None
         self.current_game = None
@@ -376,7 +382,6 @@ class LichessInterface(QMainWindow):
     def initialize_board(self):
         """
         Cria o tabuleiro gráfico (8x8) com células representadas por QLabel.
-
         """
         self.game_active = True
         self.cells = []  # Reinicia a lista de células
@@ -390,7 +395,7 @@ class LichessInterface(QMainWindow):
                 if (row + col) % 2 == 0:
                     cell.setStyleSheet("background-color: white; border: 1px solid black;")
                 else:
-                    cell.setStyleSheet("background-color: green; border: 1px solid black;")
+                    cell.setStyleSheet("background-color: grey; border: 1px solid black;")
                 self.board_layout.addWidget(cell, row, col)
                 row_cells.append(cell)
             self.cells.append(row_cells)
@@ -466,7 +471,6 @@ class LichessInterface(QMainWindow):
             self.game_thread.error.connect(self.handle_error)
             self.game_thread.start()
         elif event_type == 'gameFinish':
-            # Para o timer via sinal (garante execução na thread principal)
             self.stop_timer_signal.emit()
             self.game_finish_signal.emit()
             self.switch_layout(1)
@@ -497,6 +501,9 @@ class LichessInterface(QMainWindow):
           - Atualiza o tabuleiro aplicando o último movimento.
           - Atualiza os relógios e exibe a notação do último movimento.
         """
+        # Se a partida já terminou, não processa novos eventos
+        if self.current_game is None:
+            return
         try:
             if event.get('type') == 'gameState':
                 moves_str = event.get('moves', "")
@@ -522,7 +529,7 @@ class LichessInterface(QMainWindow):
                     self.opponent_time.setText(f"{int(white_time/60):02d}:{int(white_time%60):02d}")
                 if len(moves_list) >= 2:
                     self.start_timer_signal.emit()
-                self.game_active = True  # Garante que o jogo está ativo
+                self.game_active = True
         except Exception as e:
             logger.error(f"Error in handle_game_events: {e}")
     
@@ -540,11 +547,17 @@ class LichessInterface(QMainWindow):
             return
         try:
             if self.to_move == 'white' and self.current_color == 'white':
-                minutes, seconds = map(int, self.your_time.text().split(':'))
+                time_text = self.your_time.text()
+                if not time_text[0].isdigit():
+                    return
+                minutes, seconds = map(int, time_text.split(':'))
                 total_seconds = minutes * 60 + seconds - 1
                 self.your_time.setText(f"{int(total_seconds/60):02d}:{int(total_seconds%60):02d}")
             else:
-                minutes, seconds = map(int, self.opponent_time.text().split(':'))
+                time_text = self.opponent_time.text()
+                if not time_text[0].isdigit():
+                    return
+                minutes, seconds = map(int, time_text.split(':'))
                 total_seconds = minutes * 60 + seconds - 1
                 self.opponent_time.setText(f"{int(total_seconds/60):02d}:{int(total_seconds%60):02d}")
         except Exception as e:
@@ -587,14 +600,12 @@ class LichessInterface(QMainWindow):
         thread.start()
     
     def serial_update_loop(self):
-        # Essa thread será executada em background, enviando os tempos a cada segundo
+        # Essa thread é executada em background, enviando os tempos a cada segundo
         while True:
             if self.game_active:
-            # Suponha que os relógios estejam armazenados como strings no formato "MM:SS"
                 white_time_str = self.your_time.text()   # Ex: "02:59"
                 black_time_str = self.opponent_time.text() # Ex: "02:59"
                 last_move_val = self.last_move.text().replace("x", "")
-                # Formate uma mensagem, por exemplo:
                 msg = f"{white_time_str};{last_move_val};{black_time_str}"
             else:
                 result = self.result_label.text()  # Ex: "1-0", "0-1" ou "1/2-1/2"
